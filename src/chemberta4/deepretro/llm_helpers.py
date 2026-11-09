@@ -1,0 +1,987 @@
+# Copied from DeepRetro: deepretro/utils/llm_helpers.py
+# Commit bf9acf0 (2026-10-30). Only import paths were rewritten.
+# Do not edit by hand; see DEEPRETRO.md to re-sync.
+"""Helper utilities for DeepRetro LLM provider handling."""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass
+from typing import Any, Literal, TypedDict
+
+from chemberta4.deepretro.prompts import DEEPSEEK_MODELS, OPENAI_MODELS
+
+PromptMode = Literal["standard", "advanced"]
+ModelFamily = Literal["deepseek", "openai", "default"]
+ProviderName = Literal["anthropic", "openai", "deepseek", "local"]
+ThinkingEffort = Literal["low", "medium", "high", "max"]
+OutputTokenParam = Literal["max_tokens", "max_completion_tokens"]
+
+CACHE_CONTROL_ENV_VAR = "DEEPRETRO_PROMPT_CACHING"
+_CACHE_CONTROL_DISABLED_VALUES = {"0", "false", "no", "off"}
+EPHEMERAL_CACHE_CONTROL: dict[str, str] = {"type": "ephemeral"}
+
+# Per-request LLM safety limits. Without a request timeout a hung provider
+# socket blocks forever; without a retry cap a deep recursive solve can re-bill
+# full tokens on every transient error. Both are attached to every completion
+# call via :func:`build_completion_params` and are env-overridable.
+LLM_TIMEOUT_ENV_VAR = "DEEPRETRO_LLM_TIMEOUT"
+LLM_NUM_RETRIES_ENV_VAR = "DEEPRETRO_LLM_NUM_RETRIES"
+DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
+DEFAULT_LLM_NUM_RETRIES = 3
+
+
+def resolve_llm_timeout() -> float:
+    """Return the per-request LLM timeout in seconds.
+
+    Reads ``DEEPRETRO_LLM_TIMEOUT`` (seconds) when set to a positive number,
+    otherwise falls back to :data:`DEFAULT_LLM_TIMEOUT_SECONDS`. Invalid or
+    non-positive values are ignored in favour of the default so a bad
+    environment cannot silently disable the timeout.
+
+    Returns
+    -------
+    float
+        Timeout in seconds passed to ``litellm.completion``.
+
+    Examples
+    --------
+    >>> resolve_llm_timeout() > 0
+    True
+    """
+    raw = os.getenv(LLM_TIMEOUT_ENV_VAR)
+    if raw is not None:
+        try:
+            value = float(raw)
+        except ValueError:
+            return DEFAULT_LLM_TIMEOUT_SECONDS
+        if value > 0:
+            return value
+    return DEFAULT_LLM_TIMEOUT_SECONDS
+
+
+def resolve_llm_num_retries() -> int:
+    """Return the maximum number of retries for an LLM call.
+
+    Reads ``DEEPRETRO_LLM_NUM_RETRIES`` when set to a non-negative integer,
+    otherwise falls back to :data:`DEFAULT_LLM_NUM_RETRIES`. ``0`` disables
+    retries (a single attempt). Invalid or negative values fall back to the
+    default.
+
+    Returns
+    -------
+    int
+        Retry count passed to ``litellm.completion`` as ``num_retries``.
+
+    Examples
+    --------
+    >>> resolve_llm_num_retries() >= 0
+    True
+    """
+    raw = os.getenv(LLM_NUM_RETRIES_ENV_VAR)
+    if raw is not None:
+        try:
+            value = int(raw)
+        except ValueError:
+            return DEFAULT_LLM_NUM_RETRIES
+        if value >= 0:
+            return value
+    return DEFAULT_LLM_NUM_RETRIES
+
+
+class ChatMessage(TypedDict):
+    """Chat message sent to LiteLLM."""
+
+    role: str
+    content: str
+
+
+Pathway = list[str]
+
+MIN_REASONING_OUTPUT_TOKENS = 8192
+PREFERRED_DEEPSEEK_MODEL = "fireworks_ai/accounts/fireworks/models/deepseek-r1"
+
+# Locally served models (vLLM's OpenAI-compatible server) are reached through
+# LiteLLM's ``hosted_vllm/`` provider. The server address and key come from the
+# same env vars LiteLLM reads, with defaults for a stock ``vllm serve``.
+LOCAL_MODEL_PREFIXES = ("hosted_vllm/",)
+LOCAL_API_BASE_ENV_VAR = "HOSTED_VLLM_API_BASE"
+LOCAL_API_KEY_ENV_VAR = "HOSTED_VLLM_API_KEY"
+DEFAULT_LOCAL_API_BASE = "http://localhost:8000/v1"
+DEFAULT_LOCAL_API_KEY = "EMPTY"
+# The model emits ``<json>...</json>``; stop at the closing tag instead of
+# rambling to the token cap, and keep the tag so the parser can find it.
+LOCAL_STOP_SEQUENCES = ["</json>"]
+# Qwen's recommended thinking-mode sampling: greedy decoding while thinking
+# causes endless repetition.
+LOCAL_THINKING_MIN_TEMPERATURE = 0.6
+LOCAL_THINKING_TOP_P = 0.95
+LOCAL_THINKING_TOP_K = 20
+# Qwen3.8's chat template reads ``reasoning_effort`` as low|medium|xhigh and
+# defaults to xhigh; an unknown level falls back silently, so map every
+# ThinkingEffort explicitly rather than passing it through.
+LOCAL_EFFORT_LEVELS: dict[str, str] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "xhigh",
+    "max": "xhigh",
+}
+
+
+@dataclass(frozen=True)
+class ModelSelection:
+    """Normalized model configuration derived from a model identifier.
+
+    Attributes
+    ----------
+    raw_model : str
+        Original model identifier provided by the caller.
+    completion_model : str
+        Model identifier passed to LiteLLM after alias normalization.
+    prompt_mode : {"standard", "advanced"}
+        Prompt variant selected for the call.
+    family : {"deepseek", "openai", "default"}
+        Prompt and parser family for the model.
+    provider : {"anthropic", "openai", "deepseek"}
+        Provider inferred from the model name.
+    output_token_param : {"max_tokens", "max_completion_tokens"}
+        Token-limit keyword expected by the provider.
+    supports_reasoning_effort : bool
+        Whether the model supports a ``reasoning_effort`` control.
+    supports_seed : bool
+        Whether deterministic seed should be sent.
+    requires_temperature_one : bool
+        Whether the model should be called with temperature ``1``.
+    """
+
+    raw_model: str
+    completion_model: str
+    prompt_mode: PromptMode
+    family: ModelFamily
+    provider: ProviderName
+    output_token_param: OutputTokenParam
+    supports_reasoning_effort: bool
+    supports_seed: bool
+    requires_temperature_one: bool
+
+
+def split_prompt_mode(model: str) -> tuple[str, PromptMode]:
+    """Split a model identifier from the optional ``:adv`` prompt suffix.
+
+    Parameters
+    ----------
+    model : str
+        Model identifier, optionally suffixed with ``:adv``.
+
+    Returns
+    -------
+    tuple[str, PromptMode]
+        Base model identifier and prompt mode.
+
+    Examples
+    --------
+    >>> split_prompt_mode("openai/gpt-4o-mini:adv")
+    ('openai/gpt-4o-mini', 'advanced')
+    >>> split_prompt_mode("claude-opus-4-6")
+    ('claude-opus-4-6', 'standard')
+    """
+    base_model, separator, suffix = model.rpartition(":")
+    if separator and suffix == "adv":
+        return base_model, "advanced"
+    return model, "standard"
+
+
+def strip_provider_prefix(model: str) -> str:
+    """Return the provider-independent model name when a known prefix exists.
+
+    Parameters
+    ----------
+    model : str
+        Model identifier that may include a LiteLLM provider prefix.
+
+    Returns
+    -------
+    str
+        Model identifier with known ``openai/`` or ``anthropic/`` prefix
+        removed.
+
+    Examples
+    --------
+    >>> strip_provider_prefix("openai/gpt-4o-mini")
+    'gpt-4o-mini'
+    >>> strip_provider_prefix("fireworks_ai/accounts/fireworks/models/deepseek-r1")
+    'fireworks_ai/accounts/fireworks/models/deepseek-r1'
+    """
+    provider, separator, remainder = model.partition("/")
+    if separator and provider in {"openai", "anthropic"}:
+        return remainder
+    return model
+
+
+def looks_like_local_model(model: str) -> bool:
+    """Return whether a model identifier refers to a locally served model.
+
+    Parameters
+    ----------
+    model : str
+        Model identifier to inspect.
+
+    Returns
+    -------
+    bool
+        ``True`` for ``hosted_vllm/`` model identifiers.
+
+    Examples
+    --------
+    >>> looks_like_local_model("hosted_vllm/zai-org/GLM-4.7-Flash")
+    True
+    >>> looks_like_local_model("openai/gpt-4o-mini")
+    False
+    """
+    return model.lower().startswith(LOCAL_MODEL_PREFIXES)
+
+
+def looks_like_openai_model(model: str) -> bool:
+    """Return whether a model identifier appears to be an OpenAI model.
+
+    Parameters
+    ----------
+    model : str
+        Model identifier to inspect.
+
+    Returns
+    -------
+    bool
+        ``True`` for OpenAI-style model identifiers.
+
+    Examples
+    --------
+    >>> looks_like_openai_model("openai/gpt-4o-mini")
+    True
+    >>> looks_like_openai_model("claude-opus-4-6")
+    False
+    """
+    base_name = strip_provider_prefix(model).lower()
+    return base_name.startswith(("gpt-", "chatgpt-", "o1", "o3", "o4"))
+
+
+def looks_like_openai_reasoning_model(model: str) -> bool:
+    """Return whether a model is an OpenAI reasoning-capable model.
+
+    Parameters
+    ----------
+    model : str
+        Model identifier to inspect.
+
+    Returns
+    -------
+    bool
+        ``True`` for OpenAI reasoning-model families.
+
+    Examples
+    --------
+    >>> looks_like_openai_reasoning_model("openai/gpt-5")
+    True
+    >>> looks_like_openai_reasoning_model("openai/gpt-4o-mini")
+    False
+    """
+    base_name = strip_provider_prefix(model).lower()
+    return base_name.startswith(("o1", "o3", "o4", "gpt-5"))
+
+
+def looks_like_anthropic_reasoning_model(model: str) -> bool:
+    """Return whether a model is an Anthropic reasoning-capable model.
+
+    Parameters
+    ----------
+    model : str
+        Model identifier to inspect.
+
+    Returns
+    -------
+    bool
+        ``True`` for Anthropic reasoning-model families.
+
+    Examples
+    --------
+    >>> looks_like_anthropic_reasoning_model("anthropic/claude-sonnet-4-6")
+    True
+    >>> looks_like_anthropic_reasoning_model("claude-fable-5")
+    True
+    >>> looks_like_anthropic_reasoning_model("claude-3-5-haiku-20241022")
+    False
+    """
+    base_name = strip_provider_prefix(model).lower()
+    # Claude 4.x reasoning families and the Claude 5 family (fable/sonnet-5).
+    # These require ``temperature=1`` and accept ``reasoning_effort``.
+    return base_name.startswith(
+        (
+            "claude-opus-4-",
+            "claude-sonnet-4-",
+            "claude-fable-",
+            "claude-sonnet-5",
+            "claude-opus-5",
+        )
+    )
+
+
+def infer_provider(model: str) -> ProviderName:
+    """Infer the provider from a model identifier.
+
+    Parameters
+    ----------
+    model : str
+        Model identifier to classify.
+
+    Returns
+    -------
+    ProviderName
+        Inferred provider name.
+
+    Examples
+    --------
+    >>> infer_provider("openai/gpt-4o-mini")
+    'openai'
+    >>> infer_provider("claude-opus-4-6")
+    'anthropic'
+    >>> infer_provider("hosted_vllm/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B")
+    'local'
+    """
+    lower_model = model.lower()
+    # Checked first: a local model name may contain "deepseek" or "gpt-" and
+    # must not be rerouted to a hosted provider.
+    if looks_like_local_model(model):
+        return "local"
+    if model in DEEPSEEK_MODELS or "deepseek" in lower_model:
+        return "deepseek"
+    if model in OPENAI_MODELS or lower_model.startswith("openai/"):
+        return "openai"
+    if looks_like_openai_model(model):
+        return "openai"
+    if lower_model.startswith("anthropic/") or "claude" in lower_model:
+        return "anthropic"
+    return "anthropic"
+
+
+def normalize_completion_model(model: str, provider: ProviderName) -> str:
+    """Normalize provider aliases before a LiteLLM completion call.
+
+    Parameters
+    ----------
+    model : str
+        Model identifier supplied by a caller.
+    provider : ProviderName
+        Provider inferred for the model.
+
+    Returns
+    -------
+    str
+        LiteLLM-compatible model identifier.
+
+    Examples
+    --------
+    >>> normalize_completion_model("openai/gpt-4o-mini", "openai")
+    'openai/gpt-4o-mini'
+    >>> normalize_completion_model("fireworks/deepseek-v3p2", "deepseek")
+    'fireworks_ai/accounts/fireworks/models/deepseek-r1'
+    """
+    if provider != "deepseek":
+        return model
+
+    lower_model = model.lower()
+    if lower_model in {
+        "fireworks/deepseek-v3p2",
+        "fireworks_ai/deepseek-v3p2",
+    }:
+        return PREFERRED_DEEPSEEK_MODEL
+    if "deepseek" in lower_model and model not in DEEPSEEK_MODELS:
+        return PREFERRED_DEEPSEEK_MODEL
+    return model
+
+
+def resolve_model_selection(
+    model: str,
+    prompt_mode: PromptMode | None = None,
+) -> ModelSelection:
+    """Resolve provider, prompt, and capability settings for a model.
+
+    Parameters
+    ----------
+    model : str
+        Model identifier, optionally suffixed with ``:adv``.
+    prompt_mode : {"standard", "advanced"}, optional
+        Explicit prompt-mode override.
+
+    Returns
+    -------
+    ModelSelection
+        Normalized model configuration.
+
+    Examples
+    --------
+    >>> selection = resolve_model_selection("openai/gpt-4o-mini:adv")
+    >>> (selection.provider, selection.prompt_mode)
+    ('openai', 'advanced')
+    >>> selection = resolve_model_selection("hosted_vllm/zai-org/GLM-4.7-Flash")
+    >>> (selection.provider, selection.family, selection.output_token_param)
+    ('local', 'openai', 'max_tokens')
+    """
+    completion_model, suffix_prompt_mode = split_prompt_mode(model)
+    provider = infer_provider(completion_model)
+    completion_model = normalize_completion_model(completion_model, provider)
+    resolved_prompt_mode = prompt_mode or suffix_prompt_mode
+
+    if provider == "deepseek":
+        family: ModelFamily = "deepseek"
+    elif provider in {"openai", "local"}:
+        # Local instruct models use the non-CoT OpenAI prompt pair.
+        family = "openai"
+    else:
+        family = "default"
+
+    is_openai_reasoning = provider == "openai" and looks_like_openai_reasoning_model(
+        completion_model
+    )
+    is_anthropic_reasoning = (
+        provider == "anthropic"
+        and looks_like_anthropic_reasoning_model(completion_model)
+    )
+    return ModelSelection(
+        raw_model=model,
+        completion_model=completion_model,
+        prompt_mode=resolved_prompt_mode,
+        family=family,
+        provider=provider,
+        output_token_param=(
+            "max_completion_tokens" if provider == "openai" else "max_tokens"
+        ),
+        supports_reasoning_effort=is_openai_reasoning or is_anthropic_reasoning,
+        supports_seed=(provider in {"openai", "local"}) and not is_openai_reasoning,
+        requires_temperature_one=is_openai_reasoning or is_anthropic_reasoning,
+    )
+
+
+def resolve_output_token_limit(
+    selection: ModelSelection,
+    max_output_tokens: int,
+    enable_thinking: bool,
+) -> int:
+    """Return a provider-safe output token budget.
+
+    Parameters
+    ----------
+    selection : ModelSelection
+        Normalized model configuration.
+    max_output_tokens : int
+        Requested output token limit.
+    enable_thinking : bool
+        Whether reasoning controls are enabled.
+
+    Returns
+    -------
+    int
+        Token limit adjusted for reasoning-capable models when needed.
+
+    Examples
+    --------
+    >>> selection = resolve_model_selection("openai/gpt-5")
+    >>> resolve_output_token_limit(selection, 32, enable_thinking=True)
+    8192
+    """
+    if enable_thinking and selection.supports_reasoning_effort:
+        return max(max_output_tokens, MIN_REASONING_OUTPUT_TOKENS)
+    return max_output_tokens
+
+
+def prompt_caching_enabled() -> bool:
+    """Return whether Anthropic prompt caching should be applied.
+
+    Caching is on by default and can be disabled by setting the
+    ``DEEPRETRO_PROMPT_CACHING`` environment variable to a falsy value
+    (``0``, ``false``, ``no``, or ``off``).
+
+    Returns
+    -------
+    bool
+        ``True`` when prompt caching is enabled.
+
+    Examples
+    --------
+    >>> import os
+    >>> _ = os.environ.pop("DEEPRETRO_PROMPT_CACHING", None)
+    >>> prompt_caching_enabled()
+    True
+    >>> os.environ["DEEPRETRO_PROMPT_CACHING"] = "off"
+    >>> prompt_caching_enabled()
+    False
+    >>> _ = os.environ.pop("DEEPRETRO_PROMPT_CACHING", None)
+    """
+    raw = os.getenv(CACHE_CONTROL_ENV_VAR)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _CACHE_CONTROL_DISABLED_VALUES
+
+
+def _cache_breakpoint_indices(messages: list[ChatMessage]) -> list[int]:
+    """Return the message indices that should carry a cache breakpoint.
+
+    A breakpoint is placed on the last ``system`` message (the stable
+    system-prompt and tool-schema prefix shared across every call). When the
+    final message is a ``user`` turn, a second breakpoint caches the
+    ``system + user`` prefix as well, which is reused across the pipeline's
+    temperature-retry attempts and the agent loop's first turn. When there is
+    no ``system`` message, no breakpoint is placed because there is no stable
+    prefix worth caching.
+
+    Parameters
+    ----------
+    messages : list[ChatMessage]
+        Conversation to inspect.
+
+    Returns
+    -------
+    list[int]
+        Sorted, de-duplicated indices to mark. At most two entries.
+
+    Examples
+    --------
+    >>> _cache_breakpoint_indices(
+    ...     [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    ... )
+    [0, 1]
+    >>> _cache_breakpoint_indices(
+    ...     [
+    ...         {"role": "system", "content": "s"},
+    ...         {"role": "user", "content": "u"},
+    ...         {"role": "tool", "content": "t"},
+    ...     ]
+    ... )
+    [0]
+    >>> _cache_breakpoint_indices([{"role": "user", "content": "u"}])
+    []
+    """
+    last_system_index: int | None = None
+    for index, message in enumerate(messages):
+        if message.get("role") == "system":
+            last_system_index = index
+    if last_system_index is None:
+        return []
+    indices = {last_system_index}
+    if messages and messages[-1].get("role") == "user":
+        indices.add(len(messages) - 1)
+    return sorted(indices)
+
+
+def _mark_cache_control(message: dict[str, Any]) -> dict[str, Any]:
+    """Attach an ephemeral ``cache_control`` marker to a message's content.
+
+    A plain-string content is converted to a single text block carrying the
+    marker; an existing content-block list gets the marker on its last block.
+    Empty content is left untouched (an empty text block is rejected by the
+    Anthropic API).
+
+    Parameters
+    ----------
+    message : dict[str, Any]
+        A message dict (mutated in place and returned).
+
+    Returns
+    -------
+    dict[str, Any]
+        The same dict, with ``cache_control`` attached when possible.
+
+    Examples
+    --------
+    >>> _mark_cache_control({"role": "system", "content": "sys"})
+    {'role': 'system', 'content': [{'type': 'text', 'text': 'sys', 'cache_control': {'type': 'ephemeral'}}]}
+    >>> _mark_cache_control({"role": "user", "content": ""})
+    {'role': 'user', 'content': ''}
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        if not content:
+            return message
+        message["content"] = [
+            {
+                "type": "text",
+                "text": content,
+                "cache_control": dict(EPHEMERAL_CACHE_CONTROL),
+            }
+        ]
+    elif isinstance(content, list) and content:
+        last_block = dict(content[-1])
+        last_block["cache_control"] = dict(EPHEMERAL_CACHE_CONTROL)
+        message["content"] = [*content[:-1], last_block]
+    return message
+
+
+def apply_prompt_caching(
+    messages: list[ChatMessage],
+    selection: ModelSelection,
+) -> list[ChatMessage]:
+    """Add Anthropic prompt-caching breakpoints to a message list.
+
+    LiteLLM forwards ``cache_control`` markers to Anthropic to cache stable
+    prompt prefixes, cutting cost (~0.1x) and latency on repeated calls. This
+    codebase re-sends the same large system prompt across every
+    temperature-retry attempt, every molecule in a tree search, and every turn
+    of the agent loop, so caching the system-prompt prefix is a direct saving.
+
+    Caching is only applied for the Anthropic provider (OpenAI caches
+    automatically; other providers do not accept the marker) and only when
+    :func:`prompt_caching_enabled` returns ``True``. When neither breakpoint
+    applies the original list is returned unchanged.
+
+    Parameters
+    ----------
+    messages : list[ChatMessage]
+        Conversation to send to LiteLLM.
+    selection : ModelSelection
+        Resolved model configuration; ``selection.provider`` gates the change.
+
+    Returns
+    -------
+    list[ChatMessage]
+        A caching-annotated copy for Anthropic requests, otherwise the input
+        list unchanged.
+
+    Examples
+    --------
+    >>> selection = resolve_model_selection("claude-opus-4-6")
+    >>> messages = [
+    ...     {"role": "system", "content": "sys"},
+    ...     {"role": "user", "content": "hi"},
+    ... ]
+    >>> cached = apply_prompt_caching(messages, selection)
+    >>> cached[0]["content"][0]["cache_control"]
+    {'type': 'ephemeral'}
+    >>> messages[0]["content"]
+    'sys'
+    >>> openai_selection = resolve_model_selection("openai/gpt-4o-mini")
+    >>> apply_prompt_caching(messages, openai_selection) is messages
+    True
+    """
+    if selection.provider != "anthropic" or not prompt_caching_enabled():
+        return messages
+    indices = _cache_breakpoint_indices(messages)
+    if not indices:
+        return messages
+    cached: list[Any] = [dict(message) for message in messages]
+    for index in indices:
+        cached[index] = _mark_cache_control(cached[index])
+    return cached
+
+
+def build_completion_params(
+    model: str,
+    messages: list[ChatMessage],
+    max_completion_tokens: int,
+    temperature: float,
+    enable_thinking: bool = True,
+    thinking_effort: ThinkingEffort = "medium",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Assemble provider-aware keyword arguments for ``litellm.completion``.
+
+    Parameters
+    ----------
+    model : str
+        Model identifier, optionally with a LiteLLM provider prefix.
+    messages : list[ChatMessage]
+        Conversation to send to the model.
+    max_completion_tokens : int
+        Requested maximum output tokens.
+    temperature : float
+        Sampling temperature for providers that allow it. OpenAI reasoning
+        models and Anthropic Claude 4 reasoning-capable models are sent
+        ``temperature=1`` when reasoning controls are enabled.
+    enable_thinking : bool, optional
+        Whether to send reasoning controls for supported models.
+    thinking_effort : {"low", "medium", "high", "max"}, optional
+        Reasoning effort sent to supported models.
+    metadata : dict[str, Any], optional
+        Optional LiteLLM metadata for callbacks.
+
+    Returns
+    -------
+    dict[str, Any]
+        Keyword arguments for ``litellm.completion``. For Anthropic models the
+        ``messages`` carry ``cache_control`` breakpoints (see
+        :func:`apply_prompt_caching`) so the stable system-prompt prefix is
+        served from cache on repeated calls.
+
+    Examples
+    --------
+    >>> messages = [{"role": "user", "content": "Reply OK"}]
+    >>> params = build_completion_params("openai/gpt-4o-mini", messages, 16, 0.0)
+    >>> (params["model"], params["max_completion_tokens"], params["seed"])
+    ('openai/gpt-4o-mini', 16, 42)
+    >>> params = build_completion_params("anthropic/claude-sonnet-4-6", messages, 16, 0.2)
+    >>> (params["max_tokens"], params["temperature"], params["reasoning_effort"])
+    (8192, 1, 'medium')
+    >>> params = build_completion_params(
+    ...     "hosted_vllm/zai-org/GLM-4.7-Flash", messages, 1024, 0.0,
+    ...     enable_thinking=False,
+    ... )
+    >>> (params["temperature"], params["extra_body"]["chat_template_kwargs"])
+    (0.0, {'enable_thinking': False, 'thinking': False})
+    >>> "reasoning_effort" in params
+    False
+    >>> params = build_completion_params(
+    ...     "hosted_vllm/Qwen/Qwen3.8-27B", messages, 1024, 0.0,
+    ...     thinking_effort="high",
+    ... )
+    >>> params["extra_body"]["chat_template_kwargs"]["reasoning_effort"]
+    'xhigh'
+    """
+    selection = resolve_model_selection(model)
+    output_token_limit = resolve_output_token_limit(
+        selection=selection,
+        max_output_tokens=max_completion_tokens,
+        enable_thinking=enable_thinking,
+    )
+    params: dict[str, Any] = {
+        "model": selection.completion_model,
+        "messages": apply_prompt_caching(messages, selection),
+        selection.output_token_param: output_token_limit,
+        "temperature": (
+            1 if selection.requires_temperature_one and enable_thinking else temperature
+        ),
+        # Bound every call: a request deadline so a silent provider socket cannot
+        # hang indefinitely, and a retry cap so transient errors cannot re-bill
+        # full tokens without limit. Both are env-overridable.
+        "timeout": resolve_llm_timeout(),
+        "num_retries": resolve_llm_num_retries(),
+    }
+
+    if selection.supports_seed:
+        params["seed"] = 42
+    if metadata is not None:
+        params["metadata"] = metadata
+    if enable_thinking and selection.supports_reasoning_effort:
+        params["reasoning_effort"] = thinking_effort
+    if selection.provider == "local":
+        params.update(build_local_params(temperature, enable_thinking, thinking_effort))
+
+    return params
+
+
+def build_local_params(
+    temperature: float,
+    enable_thinking: bool,
+    thinking_effort: ThinkingEffort = "medium",
+) -> dict[str, Any]:
+    """Return the extra ``litellm.completion`` arguments for a local vLLM server.
+
+    ``chat_template_kwargs`` carries the chat template's thinking switch under
+    both names in use (Qwen3/GLM read ``enable_thinking``, DeepSeek V4 reads
+    ``thinking``; templates ignore keys they don't use). With thinking on it
+    also carries ``reasoning_effort``, mapped through
+    :data:`LOCAL_EFFORT_LEVELS`. ``stop`` and ``include_stop_str_in_output``
+    are vLLM sampling parameters passed through ``extra_body``. With thinking
+    on, sampling follows Qwen's recommendation, so the temperature is raised
+    to at least :data:`LOCAL_THINKING_MIN_TEMPERATURE`.
+
+    Parameters
+    ----------
+    temperature : float
+        Requested sampling temperature.
+    enable_thinking : bool
+        Whether the chat template should open a thinking block.
+    thinking_effort : {"low", "medium", "high", "max"}, optional
+        Reasoning effort; sent only when thinking is on.
+
+    Returns
+    -------
+    dict[str, Any]
+        Keyword arguments merged into the completion parameters.
+
+    Examples
+    --------
+    >>> params = build_local_params(0.0, enable_thinking=True)
+    >>> (params["temperature"], params["extra_body"]["top_k"])
+    (0.6, 20)
+    >>> build_local_params(0.2, enable_thinking=False)["temperature"]
+    0.2
+    >>> build_local_params(0.0, True, "max")["extra_body"]["chat_template_kwargs"]
+    {'enable_thinking': True, 'thinking': True, 'reasoning_effort': 'xhigh'}
+    """
+    template_kwargs: dict[str, Any] = {"enable_thinking": enable_thinking, "thinking": enable_thinking}
+    extra_body: dict[str, Any] = {
+        "chat_template_kwargs": template_kwargs,
+        "stop": list(LOCAL_STOP_SEQUENCES),
+        "include_stop_str_in_output": True,
+    }
+    if enable_thinking:
+        template_kwargs["reasoning_effort"] = LOCAL_EFFORT_LEVELS[thinking_effort]
+        temperature = max(temperature, LOCAL_THINKING_MIN_TEMPERATURE)
+        extra_body.update(top_p=LOCAL_THINKING_TOP_P, top_k=LOCAL_THINKING_TOP_K)
+    return {
+        "api_base": os.getenv(LOCAL_API_BASE_ENV_VAR, DEFAULT_LOCAL_API_BASE),
+        "api_key": os.getenv(LOCAL_API_KEY_ENV_VAR, DEFAULT_LOCAL_API_KEY),
+        "temperature": temperature,
+        "extra_body": extra_body,
+    }
+
+
+def coerce_response_text(content: Any) -> str:
+    """Convert LiteLLM response content to a plain string.
+
+    Parameters
+    ----------
+    content : Any
+        Response content returned by a LiteLLM message.
+
+    Returns
+    -------
+    str
+        Plain text response content.
+
+    Examples
+    --------
+    >>> coerce_response_text("OK")
+    'OK'
+    >>> coerce_response_text([{"text": "O"}, {"text": "K"}])
+    'OK'
+    """
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text_value = item.get("text")
+                if isinstance(text_value, str):
+                    parts.append(text_value)
+        return "".join(parts)
+    return str(content)
+
+
+def strip_code_fences(text: str) -> str:
+    """Remove one surrounding Markdown code fence from a payload.
+
+    Parameters
+    ----------
+    text : str
+        Text that may be wrapped in a Markdown code fence.
+
+    Returns
+    -------
+    str
+        Unwrapped text when a fence is present, otherwise stripped input text.
+
+    Examples
+    --------
+    >>> strip_code_fences('```json\\n{"data": []}\\n```')
+    '{"data": []}'
+    >>> strip_code_fences('{"data": []}')
+    '{"data": []}'
+    """
+    stripped = text.strip()
+    match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, re.DOTALL)
+    return match.group(1).strip() if match else stripped
+
+
+def extract_tag_content(text: str, tag: str) -> str | None:
+    """Extract content between matching XML-like tags.
+
+    Parameters
+    ----------
+    text : str
+        Text containing optional XML-like tags.
+    tag : str
+        Tag name to extract.
+
+    Returns
+    -------
+    str | None
+        Tag body when found, otherwise ``None``.
+
+    Examples
+    --------
+    >>> extract_tag_content("<json>{}</json>", "json")
+    '{}'
+    >>> extract_tag_content("missing", "json") is None
+    True
+    """
+    match = re.search(
+        rf"<{re.escape(tag)}\b[^>]*>\s*(.*?)\s*</{re.escape(tag)}>",
+        text,
+        re.DOTALL,
+    )
+    return match.group(1) if match else None
+
+
+def extract_json_payload(response_text: str) -> str | None:
+    """Extract tagged, fenced, or raw JSON-like payload from model text.
+
+    Parameters
+    ----------
+    response_text : str
+        Raw model response text.
+
+    Returns
+    -------
+    str | None
+        Extracted JSON-like payload, or ``None`` when no payload is found.
+
+    Examples
+    --------
+    >>> extract_json_payload('<json>{"data": []}</json>')
+    '{"data": []}'
+    >>> extract_json_payload('No JSON here') is None
+    True
+    """
+    tagged_json = extract_tag_content(response_text, "json")
+    if tagged_json:
+        return tagged_json
+
+    stripped = strip_code_fences(response_text)
+    if stripped.startswith(("{", "[")) and stripped.endswith(("}", "]")):
+        return stripped
+
+    first_object = stripped.find("{")
+    last_object = stripped.rfind("}")
+    if first_object != -1 and last_object > first_object:
+        return stripped[first_object : last_object + 1]
+
+    first_array = stripped.find("[")
+    last_array = stripped.rfind("]")
+    if first_array != -1 and last_array > first_array:
+        return stripped[first_array : last_array + 1]
+
+    return None
+
+
+def is_enabled(flag: str | bool) -> bool:
+    """Normalize string and boolean feature flags.
+
+    Note:
+    -----
+    This function is added for backwards compatibility, ideally we should
+    not have this as type safety is altered with this, we should remove this
+    once we make sure type safety is maintained.
+
+    Parameters
+    ----------
+    flag : str or bool
+        Feature flag value.
+
+    Returns
+    -------
+    bool
+        Normalized boolean value.
+
+    Examples
+    --------
+    >>> is_enabled("True")
+    True
+    >>> is_enabled(False)
+    False
+    """
+    if isinstance(flag, bool):
+        return flag
+    return flag.lower() == "true"

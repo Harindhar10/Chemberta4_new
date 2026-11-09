@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.DS_Store
+
+# datasets and run output
+data/raw/
+data/processed/
+outputs/
+
+.env
+wandb/

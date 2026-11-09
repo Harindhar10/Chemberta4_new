@@ -1,0 +1,34 @@
+# Defaults for one model. Anything on the command line overrides these.
+#
+#   python scripts/evaluate.py --task moleculenet \
+#       --config configs/evaluation/open_source/vllm_example.yaml
+#
+# The server URL is not here: it comes from HOSTED_VLLM_API_BASE, so the same
+# config works wherever the server happens to be running.
+
+model: hosted_vllm/Qwen/Qwen3-8B
+
+# Generation
+thinking: false
+thinking_effort: medium      # low | medium | high | max (high and max are Qwen3.8's xhigh)
+max_output_tokens: 1024      # raise to ~16384 for thinking runs
+workers: 64                  # concurrent requests; vLLM batches them server-side
+
+# MoleculeNet
+shots: "0,5,20"
+seeds: "0,1,2"
+split: test
+limit: null                  # null evaluates the whole test split
+# datasets: "bbbp,hiv,delaney"
+
+# Retrosynthesis
+mode: raw                    # raw | pipeline
+prompt: deepretro            # deepretro | ether0
+data: uspto_50k_test_250
+stability_check: false       # pipeline mode only
+hallucination_check: false   # pipeline mode only
+
+# Observability
+perf: false                  # scrape the server's /metrics during generation
+# wandb_project: chemberta4-eval
+tag: null                    # free-form note about the serving setup, e.g. "H100x2 tp2"
