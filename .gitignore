@@ -8,7 +8,8 @@ venv/
 
 # datasets and run output
 data/raw/
-data/processed/
+data/processed/*
+!data/processed/retrosynthesis/
 outputs/
 
 .env
