@@ -108,6 +108,40 @@ Scoring reads the checkpoint, so re-running the same command after the
 generation finishes re-scores without sending a request. That is how to apply a
 metric change to results you already have.
 
+## Publishing to the Hub
+
+```sh
+pip install -e '.[hub]'
+export HF_TOKEN=hf_...          # a write token
+
+python scripts/evaluate.py --task moleculenet --model hosted_vllm/Qwen/Qwen3-8B \
+    --shots 0,5 --limit 50 --hf-repo Harindhar10/chemberta4-evals
+```
+
+`--hf-repo` pushes the finished run to a **public** dataset repo, which is
+created on first use. Every run shares that one repo:
+
+- The run's files (raw JSONL, scores, `run_config.json`, `perf.json`) go under
+  `<task>/<run_id>/`.
+- The dataset card gets a section for the run with its hyperparameters and
+  metrics. For MoleculeNet that is the mean and std across seeds.
+- Each run is a dataset-viewer config, so the generations can be browsed on
+  the Hub or loaded directly:
+
+```python
+from datasets import load_dataset
+ds = load_dataset("Harindhar10/chemberta4-evals", "moleculenet--Qwen3-8B")
+```
+
+Pushing the same run again replaces its files and its card section in one
+commit. The token is checked before generation starts. A failed upload only
+prints a warning, because the scores are already on disk. Re-running the
+command re-scores and re-pushes without sending a request.
+
+`run_id` is the local run-folder name. Settings not in that name share a run:
+`--shots`, `--seeds` and `--limit` for MoleculeNet, and the thinking effort for
+retrosynthesis. Two such runs replace each other locally and on the Hub.
+
 ## Configs
 
 ```sh
@@ -144,6 +178,7 @@ src/chemberta4/
     thinking.py               splits a reasoning trace from the answer
     perf.py                   vLLM /metrics during a run
     reporting.py              W&B
+    hub.py                    Hugging Face Hub dataset repo and card
   deepretro/                  copied from DeepRetro; see DEEPRETRO.md
 scripts/                      prepare_data.py, evaluate.py
 ```

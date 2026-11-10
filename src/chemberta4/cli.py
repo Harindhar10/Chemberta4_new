@@ -7,14 +7,17 @@ building a namespace, without going through ``sys.argv``.
 
 from __future__ import annotations
 
+import json
+import subprocess
 from argparse import Namespace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from chemberta4.evaluation import perf as perf_mod
-from chemberta4.evaluation import reporting, runner
+from chemberta4.evaluation import hub, reporting, runner
 from chemberta4.evaluation.backends.vllm_server import VLLMServerBackend, api_base
 
 
@@ -39,6 +42,56 @@ def announce(args: Namespace, run_dir: Path, n_total: int) -> None:
     print(f"workers     : {args.workers}")
     print(f"items       : {n_total}")
     print(f"writing to  : {run_dir}")
+
+
+def git_commit() -> str | None:
+    """The repo's HEAD commit, or ``None`` outside a git checkout."""
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip() or None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def run_config(args: Namespace, run_dir: Path, **task_fields: Any) -> dict[str, Any]:
+    """The run's hyperparameters, also written to ``run_config.json``.
+
+    Shared by W&B and the Hub card. The server URL is left out: it names
+    private infrastructure and does not change the results.
+    """
+    config = {
+        "task": args.task,
+        "model": args.model,
+        **task_fields,
+        "thinking": args.thinking,
+        "thinking_effort": args.thinking_effort if args.thinking else None,
+        "max_output_tokens": args.max_output_tokens,
+        "workers": args.workers,
+        "limit": args.limit,
+        "tag": args.tag,
+        "git_commit": git_commit(),
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    with open(run_dir / "run_config.json", "w") as f:
+        json.dump(config, f, indent=2)
+    return config
+
+
+def hub_setup(args: Namespace) -> str | None:
+    """The HF token when ``--hf-repo`` is set, checked before any generation."""
+    if not getattr(args, "hf_repo", None):
+        return None
+    token = hub.hub_token(getattr(args, "hf_token", None))
+    if not token:
+        print("no HF token (--hf-token or $HF_TOKEN); this run will not be pushed")
+        return None
+    hub.check_access(args.hf_repo, token)  # fail on a bad token before spending GPU time
+    return token
 
 
 # --------------------------------------------------------------------------
@@ -70,6 +123,7 @@ def run_moleculenet(args: Namespace) -> None:
         print("no W&B key (--wandb-api-key or $WANDB_API_KEY); this run will not be logged")
     if api_key:
         reporting.login(api_key)  # fail on a bad key before spending GPU time
+    hf_token = hub_setup(args)
 
     requests = task.build_requests(datasets, shots, seeds, args.split, args.limit)
     done = task.done_keys(runner.load_jsonl(run_dir / "results.jsonl"))
@@ -107,25 +161,32 @@ def run_moleculenet(args: Namespace) -> None:
         metrics.to_csv(run_dir / "metrics.csv", index=False)
         print(f"\nwrote {run_dir / 'metrics.csv'}")
 
+    config = run_config(
+        args,
+        run_dir,
+        temperature=0.0,
+        datasets=datasets,
+        shots=shots,
+        seeds=seeds,
+        split=args.split,
+    )
     if args.wandb_project and api_key:
         reporting.log_run(
             project=args.wandb_project,
             run_name=model_slug,
-            config={
-                "task": "moleculenet",
-                "model": args.model,
-                "thinking": args.thinking,
-                "thinking_effort": args.thinking_effort if args.thinking else None,
-                "max_output_tokens": args.max_output_tokens,
-                "workers": args.workers,
-                "datasets": datasets,
-                "shots": shots,
-                "seeds": seeds,
-                "limit": args.limit,
-                "tag": args.tag,
-            },
+            config=config,
             metrics=metrics,
             perf=perf_data,
+        )
+    if hf_token:
+        hub.push_run(
+            repo_id=args.hf_repo,
+            task="moleculenet",
+            run_id=run_id,
+            run_dir=run_dir,
+            config=config,
+            metrics_md=hub.moleculenet_metrics_md(metrics),
+            token=hf_token,
         )
 
 
@@ -152,6 +213,7 @@ def run_retrosynthesis(args: Namespace) -> None:
     run_dir = out_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     jsonl = run_dir / "generations.jsonl"
+    hf_token = hub_setup(args)
 
     rows = [(int(i), row) for i, row in df.iterrows()]
     done = {rec["mol_no"] for rec in runner.load_jsonl(jsonl)}
@@ -213,3 +275,26 @@ def run_retrosynthesis(args: Namespace) -> None:
     print(report)
     write_summary(summary, report, str(run_dir), str(out_root / "summary_all.csv"))
     print(f"\nwrote {run_dir}/summary.json, summary.txt and results.csv")
+
+    config = run_config(
+        args,
+        run_dir,
+        # Raw mode samples at DeepRetro's 1.0; the pipeline raises the
+        # temperature on each retry.
+        temperature=1.0 if args.mode == "raw" else "pipeline schedule",
+        mode=args.mode,
+        prompt=args.prompt,
+        data=data_slug,
+        stability_check=args.stability_check,
+        hallucination_check=args.hallucination_check,
+    )
+    if hf_token:
+        hub.push_run(
+            repo_id=args.hf_repo,
+            task="retrosynthesis",
+            run_id=run_id,
+            run_dir=run_dir,
+            config=config,
+            metrics_md=hub.retrosynthesis_metrics_md(summary),
+            token=hf_token,
+        )

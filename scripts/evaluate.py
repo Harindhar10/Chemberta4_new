@@ -22,6 +22,7 @@ command. Items that failed at the API are not checkpointed and are retried.
 
 ``--config`` reads defaults from a YAML file; anything given on the command
 line wins. ``--perf`` records what the server was doing during generation.
+``--hf-repo`` publishes the run to a public dataset repo on the Hugging Face Hub.
 """
 
 from __future__ import annotations
@@ -98,6 +99,13 @@ def build_parser() -> argparse.ArgumentParser:
     obs.add_argument("--wandb-project", default=None, help="log the run to this W&B project")
     obs.add_argument("--wandb-api-key", default=None, help="default: $WANDB_API_KEY")
     obs.add_argument("--tag", default=None, help="free-form label for the serving setup")
+    obs.add_argument(
+        "--hf-repo",
+        default=None,
+        help="push generations, metrics and hyperparameters to this public "
+        "HF dataset repo, e.g. you/chemberta4-evals",
+    )
+    obs.add_argument("--hf-token", default=None, help="write token; default: $HF_TOKEN")
     return p
 
 
@@ -120,6 +128,7 @@ def resolve(args: argparse.Namespace, config: dict) -> argparse.Namespace:
         "limit": None,
         "max_output_tokens": None,
         "wandb_project": None,
+        "hf_repo": None,
         "tag": None,
     }
     for key, fallback in defaults.items():

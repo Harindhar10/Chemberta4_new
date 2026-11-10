@@ -17,6 +17,7 @@ import pytest
 
 MODULES = [
     "chemberta4.evaluation.thinking",
+    "chemberta4.evaluation.hub",
     "chemberta4.tasks.retrosynthesis.run",
     "chemberta4.deepretro.one_step_eval",
     "chemberta4.deepretro.llm_helpers",

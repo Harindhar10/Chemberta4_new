@@ -31,4 +31,5 @@ hallucination_check: false   # pipeline mode only
 # Observability
 perf: false                  # scrape the server's /metrics during generation
 # wandb_project: chemberta4-eval
+# hf_repo: Harindhar10/chemberta4-evals  # public dataset repo; needs $HF_TOKEN
 tag: null                    # free-form note about the serving setup, e.g. "H100x2 tp2"

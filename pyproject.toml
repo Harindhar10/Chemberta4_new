@@ -22,6 +22,7 @@ dependencies = [
 # Scoring only: deepchem supplies roc_auc_score / rms_score for MoleculeNet.
 score = ["deepchem"]
 wandb = ["wandb"]
+hub = ["huggingface_hub>=0.34"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]
