@@ -6,7 +6,7 @@
 Needs the `score` extra (deepchem). Copied from the DFS `molnet` package.
 
 Each dataset becomes <data_dir>/<name>/{train,valid,test}.csv with a `smiles` column and
-one column per task. Molecules with SMILES longer than 200 characters are dropped.
+one column per task.
 """
 import argparse
 from pathlib import Path
@@ -15,8 +15,6 @@ import deepchem as dc
 import pandas as pd
 
 from .config import DATA_DIR, DATASETS
-
-MAX_SMILES_LEN = 200
 
 
 def main(argv=None):
@@ -33,9 +31,8 @@ def main(argv=None):
         out_dir.mkdir(parents=True, exist_ok=True)
         for split, ds in zip(['train', 'valid', 'test'], splits):
             df = pd.DataFrame({'smiles': ds.X, **{t: ds.y[:, i] for i, t in enumerate(tasks)}})
-            keep = df['smiles'].str.len() <= MAX_SMILES_LEN
-            df[keep].to_csv(out_dir / f'{split}.csv', index=False)
-            print(f'{name} {split}: {keep.sum()} molecules ({(~keep).sum()} dropped, SMILES > {MAX_SMILES_LEN})')
+            df.to_csv(out_dir / f'{split}.csv', index=False)
+            print(f'{name} {split}: {len(df)} molecules')
 
 
 if __name__ == '__main__':
