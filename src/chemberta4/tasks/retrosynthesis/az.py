@@ -84,7 +84,8 @@ def _get_finder(config: str) -> Any:
         from aizynthfinder.aizynthfinder import AiZynthFinder
     except ImportError as exc:
         raise ImportError(
-            "autosolve mode needs AiZynthFinder: pip install 'chemberta4[az]'"
+            f"autosolve mode could not import AiZynthFinder ({type(exc).__name__}: {exc}). "
+            "If it is not installed: pip install 'chemberta4[az]'"
         ) from exc
     finder = AiZynthFinder(configfile=config)
     finder.stock.select("zinc")
