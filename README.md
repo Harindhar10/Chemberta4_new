@@ -14,14 +14,22 @@ results. The DeepRetro code this depends on is copied into
 
 ## Install
 
+From the repo root:
+
 ```sh
-pip install -e '.[score,wandb,dev]'
+python3 -m venv /venv/chemberta
+
+uv pip install --python /venv/chemberta/bin/python --upgrade pip
+
+uv pip install --python /venv/chemberta/bin/python \
+    vllm \
+    -e '.[score,wandb,hub,dev]'
 ```
 
-`score` pulls in deepchem, needed to build the MoleculeNet splits and to
-compute ROC-AUC and RMSE. `wandb` is optional. vLLM is **not** a dependency
-here: serve the model from its own environment, since vLLM pins versions that
-conflict with the scoring stack.
+vLLM and the evaluation code share one environment. `score` pulls in deepchem,
+needed to build the MoleculeNet splits and to compute ROC-AUC and RMSE.
+`wandb` is optional, and `hub` is only needed to publish results to the
+Hugging Face Hub.
 
 ## Prepare data
 
@@ -42,7 +50,7 @@ The retrosynthesis sets are copied from a DeepRetro checkout; point
 
 ## Run
 
-Start the server in its own environment, then point the evaluation at it.
+Start the server, then point the evaluation at it.
 
 ```sh
 vllm serve Qwen/Qwen3-8B --dtype bfloat16 --max-model-len 17408 \
@@ -96,11 +104,14 @@ distinguishable in the summary.
 | --- | --- |
 | `raw` | One completion per molecule, parsed at scoring time. The model on its own. |
 | `pipeline` | DeepRetro's `llm_pipeline`: temperature retries, `validity_check`, and optional `--stability-check` and `--hallucination-check`. What the multi-step search would receive. |
+| `autosolve` | DeepRetro's `AutoSolver` at depth 1: AiZynthFinder first, the LLM only when AZ does not solve the target. Scores three views: `hybrid` (what `AutoSolver` returns), `az` and `llm`. Needs `pip install .[az]` and `AZ_MODELS_PATH`. |
 
 `--prompt ether0` swaps in the prompt futurehouse/ether0 was trained on, which
 asks for a single reaction SMILES. Only top-1 is meaningful with it.
 
-There is no `autosolve` mode here; AiZynthFinder stays in DeepRetro.
+`autosolve` uses DeepRetro's defaults: the stability and hallucination checks are **on** (`--no-stability-check` / `--no-hallucination-check` turn them off), the AZ model is `Pistachio_100+`, and the LLM keeps the first `--top-k 3` pathways. The hallucination check *ranks* pathways (best first, flagged ones demoted, not dropped) once after the retry loop; in `pipeline` it drops them inside the loop and stays off unless asked for. The two give different top-1, so compare like with like. If AZ solves a target, its route is the answer even when that route has no reaction (a basic target), exactly as in `AutoSolver`. `DEEPRETRO.md` lists the rules and where this code deliberately differs.
+
+AZ results are cached in `<out-root>/az_cache/<data>_<az-model>.jsonl` and shared across LLM runs over the same data, so a second model does not repeat the search.
 
 ### Scoring without generating
 
@@ -111,7 +122,6 @@ metric change to results you already have.
 ## Publishing to the Hub
 
 ```sh
-pip install -e '.[hub]'
 export HF_TOKEN=hf_...          # a write token
 
 python scripts/evaluate.py --task moleculenet --model hosted_vllm/Qwen/Qwen3-8B \

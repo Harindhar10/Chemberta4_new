@@ -23,6 +23,8 @@ dependencies = [
 score = ["deepchem"]
 wandb = ["wandb"]
 hub = ["huggingface_hub>=0.34"]
+# autosolve mode: AiZynthFinder, plus the model files named by AZ_MODELS_PATH.
+az = ["aizynthfinder"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

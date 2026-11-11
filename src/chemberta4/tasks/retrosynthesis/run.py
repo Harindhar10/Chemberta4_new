@@ -13,6 +13,17 @@ Two modes, which answer different questions.
     actually hand to its multi-step search, so it is the number to quote for
     the system rather than the model.
 
+``autosolve``
+    DeepRetro's depth-1 loop (``AutoSolver``): AiZynthFinder first, the LLM as
+    fallback. The stability and hallucination checks default to **on**, as in
+    ``AutoSolver``. The LLM half differs from ``pipeline`` in four ways, all taken
+    from ``AutoSolver``: the target is canonicalized before the prompt; the
+    hallucination gate runs once after the retry loop and *ranks* pathways instead of
+    dropping them; the answer is capped at the first ``top_k`` pathways; and when AZ
+    solves a target its top route is the answer and the LLM's is not used. See
+    :mod:`chemberta4.tasks.retrosynthesis.autosolve`. The AZ half and the three
+    scored views (hybrid, az, llm) are in :mod:`chemberta4.cli`.
+
 ``--prompt ether0`` swaps DeepRetro's prompt for the one futurehouse/ether0 was
 trained on, which asks for a single reaction SMILES. Use it to give ether0 a
 fair run. Its answer parses to one proposal, so only top-1 means anything there.
@@ -30,7 +41,7 @@ ETHER0_RETRO_PROMPT = (
     "(e.g., CC=O.O=C1CCC1Cl>[Mg2+].CCOCC>CC(O)C1CCC1=O)"
 )
 
-MODES = ("raw", "pipeline")
+MODES = ("raw", "pipeline", "autosolve")
 PROMPTS = ("deepretro", "ether0")
 
 
@@ -71,11 +82,13 @@ def generate_one(
     max_output_tokens: int = 1024,
     stability_check: bool = False,
     hallucination_check: bool = False,
+    top_k: int = 3,
 ) -> dict[str, Any]:
     """Run one molecule and return its record.
 
     Imported lazily because the copied LLM modules pull in litellm, rdkit and
     structlog; a ``--help`` or a data-preparation run should not pay for that.
+    ``top_k`` caps the proposals in ``autosolve`` mode only.
     """
     from chemberta4.deepretro.llm import call_LLM, llm_pipeline
 
@@ -102,6 +115,37 @@ def generate_one(
             max_output_tokens=max_output_tokens,
         )
         return {**record, "call_status": status, "raw": text}
+
+    if mode == "autosolve":
+        from chemberta4.deepretro.utils_molecule import canonicalize
+        from chemberta4.tasks.retrosynthesis.autosolve import (
+            canonicalize_pathways,
+            rank_hallucination,
+        )
+
+        # AutoSolver rewrites the target canonically before anything else, so the
+        # prompt, the validity check and the gate all see one spelling. The record
+        # keeps ``input`` as given, so scoring and the dataset join do not change.
+        target = canonicalize(smiles.strip())
+        messages = prompt_messages(prompt, target)
+        # AutoSolver keeps the hallucination gate out of the retry loop: a rejection
+        # there cannot trigger another attempt. So the loop gets validity and
+        # stability only, and the gate runs once on what comes back.
+        pathways, _explanations, _confidence = llm_pipeline(
+            target,
+            model=model,
+            messages=messages,
+            enable_thinking=thinking,
+            max_output_tokens=max_output_tokens,
+            stability_check=stability_check,
+            hallucination_check=False,
+        )
+        pathways = canonicalize_pathways(pathways)
+        if hallucination_check:
+            pathways = rank_hallucination(target, pathways)
+        # solve_multiple keeps the first k pathways, then skips any with no reactants.
+        pathways = [p for p in pathways[:top_k] if p]
+        return {**record, "proposals": pathways, "status": 200 if pathways else 504}
 
     pathways, _explanations, _confidence = llm_pipeline(
         smiles,
@@ -141,8 +185,15 @@ def run_name(
     mode: str = "raw",
     prompt: str = "deepretro",
     thinking: bool = False,
+    az_model: str | None = None,
+    stability_check: bool = True,
+    hallucination_check: bool = True,
+    top_k: int = 3,
 ) -> str:
     """Directory name for a run, so differing settings never share a checkpoint.
+
+    The last three arguments matter in ``autosolve`` mode only, where their
+    defaults are DeepRetro's; a setting that differs from DeepRetro's is named.
 
     Examples
     --------
@@ -150,9 +201,23 @@ def run_name(
     'uspto_50k_test_250_Qwen3-8B_raw'
     >>> run_name("d", "m/Model", mode="pipeline", thinking=True, prompt="ether0")
     'd_Model_think_pipeline_ether0prompt'
+    >>> run_name("d", "m/Model", mode="autosolve", az_model="Pistachio_100+")
+    'd_Model_autosolve_Pistachio_100+'
+    >>> run_name("d", "m/Model", mode="autosolve", az_model="USPTO",
+    ...          stability_check=False, hallucination_check=False, top_k=5)
+    'd_Model_autosolve_USPTO_nostab_nohall_k5'
     """
     model_slug = model.rstrip("/").split("/")[-1]
     name = f"{data_slug}_{model_slug}{'_think' if thinking else ''}_{mode}"
+    if mode == "autosolve":
+        if az_model:
+            name += f"_{az_model}"
+        if not stability_check:
+            name += "_nostab"
+        if not hallucination_check:
+            name += "_nohall"
+        if top_k != 3:
+            name += f"_k{top_k}"
     if prompt != "deepretro":
         name += f"_{prompt}prompt"
     return name

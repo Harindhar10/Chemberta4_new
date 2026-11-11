@@ -8,8 +8,11 @@ building a namespace, without going through ``sys.argv``.
 from __future__ import annotations
 
 import json
+import multiprocessing
 import subprocess
+import time
 from argparse import Namespace
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -193,6 +196,69 @@ def run_moleculenet(args: Namespace) -> None:
 # --------------------------------------------------------------------------
 # Retrosynthesis
 # --------------------------------------------------------------------------
+def az_cache_path(args: Namespace, data_slug: str) -> Path:
+    """Shared AiZynthFinder checkpoint for this dataset and AZ model.
+
+    AZ's answer does not depend on the LLM, so every autosolve run over the same
+    data and AZ model reads and extends one file instead of searching again.
+    """
+    if args.az_cache:
+        path = Path(args.az_cache)
+    else:
+        path = Path(args.out_root) / "az_cache" / f"{data_slug}_{args.az_model}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def run_az_phase(rows: list[tuple[int, Any]], jsonl: Path, az_model: str, workers: int) -> None:
+    """Search every molecule that is not yet in the shared AZ checkpoint.
+
+    A molecule whose search raised is *not* checkpointed, so the next run retries
+    it. Writing it would freeze a transient failure, such as a missing model file,
+    into a cache that every later run reads as "AZ found nothing".
+    """
+    from chemberta4.deepretro.utils_molecule import canonicalize
+    from chemberta4.tasks.retrosynthesis import az
+    from chemberta4.tasks.retrosynthesis.autosolve import run_az_record
+
+    done = {rec["mol_no"] for rec in runner.load_jsonl(jsonl)}
+    todo = [(i, row) for i, row in rows if i not in done]
+    print(f"[az] {len(done)} cached, searching {len(todo)}")
+    if not todo:
+        return
+    # Fail before spawning workers: a missing config would otherwise surface as
+    # one error record per molecule.
+    print(f"AZ config: {az.resolve_config(az_model)}")
+
+    started = time.time()
+    errors: list[str] = []
+    # spawn, not fork: by now litellm and langfuse have background threads, and
+    # forking a threaded process can deadlock the child.
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool, open(
+        jsonl, "a"
+    ) as fout:
+        futures = [
+            pool.submit(run_az_record, i, canonicalize(row["input"]), az_model)
+            for i, row in todo
+        ]
+        for n, future in enumerate(as_completed(futures), start=1):
+            rec = future.result()
+            if rec["error"]:
+                errors.append(rec["error"])
+            else:
+                fout.write(json.dumps(rec) + "\n")
+                fout.flush()
+            if n % 10 == 0:
+                print(f"  [az] {n}/{len(todo)} ({(time.time() - started) / 60:.1f} min)")
+    print(f"[az] {len(todo)} molecules in {(time.time() - started) / 60:.2f} min")
+    if errors:
+        print(
+            f"[az] {len(errors)} molecules failed and were not checkpointed "
+            f"(retried next run); first error: {errors[0]}"
+        )
+
+
 def run_retrosynthesis(args: Namespace) -> None:
     """Generate and score single-step retrosynthesis proposals."""
     from chemberta4.tasks.retrosynthesis import data as retro_data
@@ -207,7 +273,15 @@ def run_retrosynthesis(args: Namespace) -> None:
     df = retro_data.load(dataset)
     data_slug = Path(dataset).stem
     run_id = task.run_name(
-        data_slug, args.model, mode=args.mode, prompt=args.prompt, thinking=args.thinking
+        data_slug,
+        args.model,
+        mode=args.mode,
+        prompt=args.prompt,
+        thinking=args.thinking,
+        az_model=args.az_model,
+        stability_check=args.stability_check,
+        hallucination_check=args.hallucination_check,
+        top_k=args.top_k,
     )
     out_root = Path(args.out_root) / "retrosynthesis"
     run_dir = out_root / run_id
@@ -222,6 +296,9 @@ def run_retrosynthesis(args: Namespace) -> None:
         todo = todo[: max(0, args.limit - len(done))]
     announce(args, run_dir, len(rows))
     print(f"mode        : {args.mode}   prompt: {args.prompt}")
+    if args.mode == "autosolve":
+        print(f"az model    : {args.az_model}   workers: {args.az_workers}   top-k: {args.top_k}")
+        print(f"checks      : stability={args.stability_check} hallucination={args.hallucination_check}")
     print(f"{len(done)} already done, generating {len(todo)}")
 
     with perf_mod.perf_window(args.perf) as perf:
@@ -237,6 +314,7 @@ def run_retrosynthesis(args: Namespace) -> None:
                 max_output_tokens=args.max_output_tokens,
                 stability_check=args.stability_check,
                 hallucination_check=args.hallucination_check,
+                top_k=args.top_k,
             ),
             out_path=jsonl,
             workers=args.workers,
@@ -255,12 +333,6 @@ def run_retrosynthesis(args: Namespace) -> None:
         in_run = {i for i, _ in rows[: args.limit]}
         records = {i: r for i, r in records.items() if i in in_run}
 
-    scored = (
-        pd.DataFrame([score_record(rec) for rec in records.values()])
-        .set_index("mol_no")
-        .sort_index()
-    )
-    scored.to_csv(run_dir / "results.csv")
     meta: dict[str, Any] = {
         "run": run_id,
         "model_id": args.model,
@@ -271,10 +343,46 @@ def run_retrosynthesis(args: Namespace) -> None:
         "data_csv": str(retro_data.path(data_slug) if not str(dataset).endswith(".csv") else dataset),
         "n_total": int(len(df)),
     }
-    summary, report = summarize(scored, meta)
-    print(report)
-    write_summary(summary, report, str(run_dir), str(out_root / "summary_all.csv"))
-    print(f"\nwrote {run_dir}/summary.json, summary.txt and results.csv")
+    if args.mode == "autosolve":
+        from chemberta4.tasks.retrosynthesis.autosolve import score_views
+
+        az_jsonl = az_cache_path(args, data_slug)
+        print(f"AZ cache: {az_jsonl}")
+        az_rows = rows[: args.limit] if args.limit is not None else rows
+        run_az_phase(az_rows, az_jsonl, args.az_model, args.az_workers)
+        # The shared checkpoint can cover more molecules than this run.
+        in_run = {i for i, _ in az_rows}
+        az_records = {
+            rec["mol_no"]: rec
+            for rec in runner.load_jsonl(az_jsonl)
+            if rec["mol_no"] in in_run
+        }
+        full = score_views(
+            df,
+            records,
+            az_records,
+            model=args.model,
+            az_model=args.az_model,
+            run_dir=str(run_dir),
+            summary_csv=str(out_root / "summary_all.csv"),
+            meta={**meta, "az_model": args.az_model},
+        )
+        if not full:
+            return
+        # The Hub card and the config below describe the hybrid view, which is
+        # what AutoSolver would hand to its search.
+        summary = full["views"]["hybrid"]
+    else:
+        scored = (
+            pd.DataFrame([score_record(rec) for rec in records.values()])
+            .set_index("mol_no")
+            .sort_index()
+        )
+        scored.to_csv(run_dir / "results.csv")
+        summary, report = summarize(scored, meta)
+        print(report)
+        write_summary(summary, report, str(run_dir), str(out_root / "summary_all.csv"))
+        print(f"\nwrote {run_dir}/summary.json, summary.txt and results.csv")
 
     config = run_config(
         args,
@@ -287,6 +395,11 @@ def run_retrosynthesis(args: Namespace) -> None:
         data=data_slug,
         stability_check=args.stability_check,
         hallucination_check=args.hallucination_check,
+        **(
+            {"az_model": args.az_model, "top_k": args.top_k}
+            if args.mode == "autosolve"
+            else {}
+        ),
     )
     if hf_token:
         hub.push_run(

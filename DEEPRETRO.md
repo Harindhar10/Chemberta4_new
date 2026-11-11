@@ -74,3 +74,64 @@ changes `SYS_PROMPT` or the response parser, scores produced before and after a
 re-sync are not directly comparable. The tests in `tests/test_prompts.py` assert
 the copied prompt still matches DeepRetro's when a checkout is present, so
 drift is visible rather than silent.
+
+## Re-implemented, not copied: the `autosolve` mode
+
+The depth-1 `autosolve` mode needs AiZynthFinder and a hallucination gate that the
+copied files do not have. Those live in `src/chemberta4/tasks/retrosynthesis/` as
+chemberta4's own code, because the copied files are marked "do not edit by hand".
+They follow DeepRetro at commit `bf9acf0`:
+
+| chemberta4 | DeepRetro |
+| --- | --- |
+| `az.py` `run_az`, `_get_finder`, `is_basic_molecule` | `deepretro/utils/az.py` |
+| `autosolve.py` `az_first_step_proposals`, `run_az_record`, `hybrid_views` | the helpers removed from the copy of `deepretro/utils/one_step_eval.py`, **changed to follow `AutoSolver.single_step`/`solve_multiple`** (see below) rather than the eval script |
+| `autosolve.py` `rank_hallucination` | `deepretro/algorithms/pipeline_checks.py` `hallucination_checker` (`rank_only=True`) |
+| `autosolve.py` `canonicalize_pathways` | `AutoSolver._canonicalize_pathways` |
+
+A re-sync diff of those DeepRetro files shows what to port by hand.
+
+### Equivalence to `AutoSolver` at depth 1
+
+The `hybrid` view is meant to reproduce what `AutoSolver` returns for a target at depth
+1. These are the rules it follows, with the DeepRetro defaults they come from:
+
+- **Checks default on.** `stability_check=True` (which also raises the retry budget
+  from 6 to 15 attempts) and the heuristic hallucination gate, both on in `autosolve`
+  and off in `raw`/`pipeline`. `--no-stability-check` / `--no-hallucination-check`
+  turn them off; a value in the config file overrides the mode default.
+- **Validity** always runs, inside `llm_pipeline`.
+- **Target canonicalized first.** `AutoSolver` strips and canonicalizes the target
+  before the prompt, the validity check and the gate. The record's `input` keeps the
+  dataset's spelling.
+- **Gate after the retry loop, ranking.** `llm_pipeline` is called with
+  `hallucination_check=False`; the gate then runs once and ranks pathways (score at
+  or above `reject_below` first, flagged ones demoted, not dropped). In `pipeline` the
+  gate still drops pathways inside the loop, unchanged.
+- **AZ solved means AZ answers.** When AZ solves a target and returns a route, the
+  answer is `routes[0]`'s first step and the LLM is not used, **even when that route
+  has no reaction** (a basic or in-stock target). Such a target scores as unanswered.
+- **LLM answer capped at `top_k`** (default 3, the batch runner's `--top-k`): the
+  first `k` ranked pathways, then any with no reactants dropped, as `solve_multiple`.
+- **AZ model default** `Pistachio_100+`.
+
+### Where it deliberately differs
+
+- **Paths.** `AZ_MODELS_PATH` and `AZ_MODEL_CONFIG_PATH` are used as given. DeepRetro
+  prefixes its own project root.
+- **No disk cache, no `BASIC_MOLECULES` list.** The shared AZ checkpoint replaces the
+  cache; `is_basic_molecule` (under 5 atoms or 5 carbons) covers the list for
+  drug-sized targets.
+- **AZ failures are not checkpointed.** `AutoSolver` turns an AZ exception into an
+  unsolved leaf and does *not* try the LLM; DeepRetro's eval script writes an errored
+  record, which later runs read as "AZ found nothing". Here the molecule is retried next
+  run and left out of the current scoring (reported as "in only one checkpoint"), so
+  `az_errors` in the coverage block counts only records already cached.
+- **Thinking and token limit** are the model's serving settings, not part of the loop.
+  chemberta4 runs non-thinking with `--max-output-tokens` for every mode, whereas
+  `AutoSolver` defaults `enable_thinking=True` for hosted APIs.
+- **ML checker not ported.** Only the heuristic gate is implemented (no `deepchem` or
+  `xgboost`), and nothing past depth 1: no recursion, agent mode or metadata.
+- **All molecules go through the LLM**, including those AZ solves, so the `llm` view
+  covers the whole set. `AutoSolver` would skip the LLM for them; the `hybrid` answer
+  is the same either way, only the LLM cost differs.

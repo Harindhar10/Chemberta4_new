@@ -22,11 +22,22 @@ limit: null                  # null evaluates the whole test split
 # datasets: "bbbp,hiv,delaney"
 
 # Retrosynthesis
-mode: raw                    # raw | pipeline
+mode: raw                    # raw | pipeline | autosolve
 prompt: deepretro            # deepretro | ether0
 data: uspto_50k_test_250
-stability_check: false       # pipeline mode only
-hallucination_check: false   # pipeline mode only
+# stability_check and hallucination_check are left unset on purpose: they default to
+# off in raw/pipeline and to ON in autosolve, which is DeepRetro's AutoSolver default.
+# Setting either here overrides that for every mode. In autosolve the hallucination
+# check ranks pathways instead of dropping them.
+# stability_check: false
+# hallucination_check: false
+
+# autosolve mode only: AiZynthFinder first, the LLM as fallback. Needs `pip install .[az]`,
+# and AZ_MODELS_PATH (holding <az_model>/config.yml) or AZ_MODEL_CONFIG_PATH set to absolute paths.
+az_model: Pistachio_100+     # DeepRetro's default
+top_k: 3                     # LLM pathways kept per molecule, as DeepRetro's batch runner
+az_workers: 4                # each worker loads its own AZ model and stock
+# az_cache: null             # default: <out-root>/az_cache/<data>_<az_model>.jsonl, shared across LLM runs
 
 # Observability
 perf: false                  # scrape the server's /metrics during generation

@@ -83,11 +83,45 @@ def build_parser() -> argparse.ArgumentParser:
     mol.add_argument("--split", default=None)
 
     retro = p.add_argument_group("retrosynthesis")
-    retro.add_argument("--mode", choices=["raw", "pipeline"], default=None)
+    retro.add_argument("--mode", choices=["raw", "pipeline", "autosolve"], default=None)
     retro.add_argument("--prompt", choices=["deepretro", "ether0"], default=None)
     retro.add_argument("--data", default=None, help="dataset name or path to a CSV")
-    retro.add_argument("--stability-check", action="store_true", default=None)
-    retro.add_argument("--hallucination-check", action="store_true", default=None)
+    retro.add_argument(
+        "--stability-check",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="default: on in autosolve mode (DeepRetro's default), off otherwise",
+    )
+    retro.add_argument(
+        "--hallucination-check",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="default: on in autosolve mode (DeepRetro's default), off otherwise",
+    )
+    retro.add_argument(
+        "--az-model",
+        default=None,
+        help="autosolve mode: AiZynthFinder model folder under $AZ_MODELS_PATH "
+        "(default: Pistachio_100+, DeepRetro's default)",
+    )
+    retro.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="autosolve mode: LLM pathways kept per molecule (default: 3, as DeepRetro's batch runner)",
+    )
+    retro.add_argument(
+        "--az-workers",
+        type=int,
+        default=None,
+        help="autosolve mode: parallel AZ processes, each loads its own model (default: 4)",
+    )
+    retro.add_argument(
+        "--az-cache",
+        default=None,
+        help="autosolve mode: AZ checkpoint shared across LLM runs "
+        "(default: <out-root>/az_cache/<data>_<az-model>.jsonl)",
+    )
 
     obs = p.add_argument_group("observability")
     obs.add_argument(
@@ -122,8 +156,10 @@ def resolve(args: argparse.Namespace, config: dict) -> argparse.Namespace:
         "mode": "raw",
         "prompt": "deepretro",
         "data": None,
-        "stability_check": False,
-        "hallucination_check": False,
+        "az_model": "Pistachio_100+",
+        "az_workers": 4,
+        "top_k": 3,
+        "az_cache": None,
         "perf": False,
         "limit": None,
         "max_output_tokens": None,
@@ -134,6 +170,12 @@ def resolve(args: argparse.Namespace, config: dict) -> argparse.Namespace:
     for key, fallback in defaults.items():
         if getattr(args, key, None) is None:
             setattr(args, key, config.get(key, fallback))
+    # DeepRetro's AutoSolver runs the stability and hallucination checks by default;
+    # the other modes keep them opt-in. The mode is known by now, so the fallback
+    # can depend on it. A value set on the command line or in the config still wins.
+    for key in ("stability_check", "hallucination_check"):
+        if getattr(args, key, None) is None:
+            setattr(args, key, config.get(key, args.mode == "autosolve"))
     if args.model is None:
         args.model = config.get("model")
     if not args.model:
