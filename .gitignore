@@ -12,5 +12,8 @@ data/processed/*
 !data/processed/retrosynthesis/
 outputs/
 
+# AiZynthFinder models (large; see README.md)
+az_models/
+
 .env
 wandb/

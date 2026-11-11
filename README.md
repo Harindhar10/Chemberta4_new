@@ -113,6 +113,33 @@ asks for a single reaction SMILES. Only top-1 is meaningful with it.
 
 AZ results are cached in `<out-root>/az_cache/<data>_<az-model>.jsonl` and shared across LLM runs over the same data, so a second model does not repeat the search.
 
+### Getting the AiZynthFinder models
+
+`autosolve` needs `<AZ_MODELS_PATH>/<az-model>/config.yml`. Set `AZ_MODELS_PATH` in the shell
+or in `.env`. A relative path is resolved against the directory you run from, normally the
+repo root, so run every command from the same place; an absolute path also works.
+
+**USPTO (public):**
+
+```bash
+pip install -e ".[az]"
+export AZ_MODELS_PATH=az_models   # git-ignored
+python -m aizynthfinder.tools.download_public_data "$AZ_MODELS_PATH/USPTO"
+python scripts/evaluate.py --task retrosynthesis --mode autosolve --az-model USPTO ...
+```
+
+The target must be the `USPTO` subfolder, so that the model name matches the folder.
+
+**Pistachio_25 / 50 / 100 / 100+ (private):** these are DeepRetro's own models and are not
+public. DeepRetro's `data/download_pistachio_models.py` fetches them from a private S3 bucket
+with `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. It copies the USPTO `config.yml` into each
+folder and edits its paths, so download USPTO first. Without that access, `autosolve`'s default
+`--az-model Pistachio_100+` fails with "No AiZynthFinder config"; pass `--az-model USPTO`.
+
+The public USPTO templates come from USPTO data, so AZ may have seen these test reactions.
+Its `az` and `hybrid` scores with `USPTO` are likely inflated; prefer a Pistachio model for a
+fair comparison.
+
 ### Scoring without generating
 
 Scoring reads the checkpoint, so re-running the same command after the

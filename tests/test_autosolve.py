@@ -297,6 +297,15 @@ def test_config_is_read_from_the_model_folder(monkeypatch, tmp_path):
     assert az.resolve_config("USPTO") == str(tmp_path / "USPTO" / "config.yml")
 
 
+def test_a_relative_models_path_is_resolved_against_the_current_directory(monkeypatch, tmp_path):
+    (tmp_path / "az_models" / "USPTO").mkdir(parents=True)
+    (tmp_path / "az_models" / "USPTO" / "config.yml").write_text("")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AZ_MODELS_PATH", "az_models")
+    monkeypatch.delenv("AZ_MODEL_CONFIG_PATH", raising=False)
+    assert az.resolve_config("USPTO") == "az_models/USPTO/config.yml"
+
+
 def test_missing_aizynthfinder_names_the_extra(monkeypatch):
     monkeypatch.setattr(az, "resolve_config", lambda model=None: "config.yml")
     monkeypatch.setattr(az, "_FINDER_CACHE", {})

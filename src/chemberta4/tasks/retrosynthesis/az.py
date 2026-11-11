@@ -69,7 +69,10 @@ def resolve_config(az_model: str | None = None) -> str:
         return fallback
     raise FileNotFoundError(
         f"No AiZynthFinder config for model {az_model!r}. Set AZ_MODELS_PATH so that "
-        "<AZ_MODELS_PATH>/<az-model>/config.yml exists, or set AZ_MODEL_CONFIG_PATH."
+        "<AZ_MODELS_PATH>/<az-model>/config.yml exists, or set AZ_MODEL_CONFIG_PATH. "
+        "A relative path is resolved against the current directory. The public USPTO "
+        "model: python -m aizynthfinder.tools.download_public_data az_models/USPTO "
+        "(Pistachio models are private; see README.md)."
     )
 
 
