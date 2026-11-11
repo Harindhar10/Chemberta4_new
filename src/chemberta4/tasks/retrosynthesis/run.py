@@ -79,6 +79,7 @@ def generate_one(
     mode: str = "raw",
     prompt: str = "deepretro",
     thinking: bool = False,
+    thinking_effort: str = "medium",
     max_output_tokens: int = 1024,
     stability_check: bool = False,
     hallucination_check: bool = False,
@@ -111,6 +112,7 @@ def generate_one(
         "mol_no": mol_no,
         "model_id": model,
         "thinking": thinking,
+        "thinking_effort": thinking_effort if thinking else None,
         "mode": mode,
         "prompt": prompt,
         "input": smiles,
@@ -125,6 +127,7 @@ def generate_one(
             messages=messages,
             temperature=1.0,
             enable_thinking=thinking,
+            thinking_effort=thinking_effort,
             max_output_tokens=max_output_tokens,
         )
         return {**record, "call_status": status, "raw": text}
@@ -150,6 +153,7 @@ def generate_one(
             model=model,
             messages=messages,
             enable_thinking=thinking,
+            thinking_effort=thinking_effort,
             max_output_tokens=max_output_tokens,
             stability_check=stability_check,
             hallucination_check=False,
@@ -179,6 +183,7 @@ def generate_one(
         model=model,
         messages=messages,
         enable_thinking=thinking,
+        thinking_effort=thinking_effort,
         max_output_tokens=max_output_tokens,
         stability_check=stability_check,
         hallucination_check=hallucination_check,
@@ -220,6 +225,7 @@ def run_name(
     mode: str = "raw",
     prompt: str = "deepretro",
     thinking: bool = False,
+    thinking_effort: str = "medium",
     az_model: str | None = None,
     stability_check: bool = True,
     hallucination_check: bool = True,
@@ -235,7 +241,7 @@ def run_name(
     >>> run_name("uspto_50k_test_250", "hosted_vllm/Qwen/Qwen3-8B")
     'uspto_50k_test_250_Qwen3-8B_raw'
     >>> run_name("d", "m/Model", mode="pipeline", thinking=True, prompt="ether0")
-    'd_Model_think_pipeline_ether0prompt'
+    'd_Model_think_medium_pipeline_ether0prompt'
     >>> run_name("d", "m/Model", mode="autosolve", az_model="Pistachio_100+")
     'd_Model_autosolve_Pistachio_100+'
     >>> run_name("d", "m/Model", mode="autosolve", az_model="USPTO",
@@ -243,7 +249,8 @@ def run_name(
     'd_Model_autosolve_USPTO_nostab_nohall_k5'
     """
     model_slug = model.rstrip("/").split("/")[-1]
-    name = f"{data_slug}_{model_slug}{'_think' if thinking else ''}_{mode}"
+    think = f"_think_{thinking_effort}" if thinking else ""
+    name = f"{data_slug}_{model_slug}{think}_{mode}"
     if mode == "autosolve":
         if az_model:
             name += f"_{az_model}"

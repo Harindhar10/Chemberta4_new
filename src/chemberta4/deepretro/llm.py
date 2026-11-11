@@ -570,6 +570,7 @@ def llm_pipeline(
     hallucination_check: str | bool = "False",
     prompt_mode: PromptMode | None = None,
     enable_thinking: bool = True,
+    thinking_effort: ThinkingEffort = "medium",
     max_output_tokens: int | None = None,
     trace: list[dict[str, Any]] | None = None,
 ) -> tuple[list[Pathway], list[str], list[float]]:
@@ -591,6 +592,8 @@ def llm_pipeline(
         Prompt-mode override.
     enable_thinking : bool, optional
         Whether provider-supported reasoning controls should be sent.
+    thinking_effort : {"low", "medium", "high", "max"}, optional
+        Provider reasoning effort when supported.
     max_output_tokens : int, optional
         Output token override for each LLM call.
     trace : list of dict, optional
@@ -633,6 +636,7 @@ def llm_pipeline(
                 temperature=temperature,
                 prompt_mode=prompt_mode,
                 enable_thinking=enable_thinking,
+                thinking_effort=thinking_effort,
                 max_output_tokens=max_output_tokens,
             )
         )
