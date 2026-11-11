@@ -1,18 +1,81 @@
 # chemberta4
 
-Evaluation of open-source LLMs on two chemistry tasks, served locally by vLLM:
+**chemberta4 is a library for benchmarking open-source models on chemistry, and for
+mid- and post-training them.** Today it evaluates models on two tasks, MoleculeNet and
+single-step retrosynthesis. More is on the way: ChemLLMBench, ChemEval, and model training
+(see [Roadmap](#roadmap)).
 
-- **MoleculeNet** — molecular property prediction, few-shot, scored by ROC-AUC
-  (classification) and RMSE (regression) over 11 datasets.
-- **Single-step retrosynthesis** — USPTO-50k products, scored by top-1 and
-  top-k exact match plus MaxFrag accuracy.
+**How it works, in three steps:**
 
-Both tasks use the same prompts and metrics as the earlier Claude/GPT and
-DeepRetro runs, so a model evaluated here is directly comparable with those
-results. The DeepRetro code this depends on is copied into
-`src/chemberta4/deepretro/`, not installed — see [DEEPRETRO.md](DEEPRETRO.md).
+1. Serve an open-source model locally with [vLLM](https://github.com/vllm-project/vllm).
+2. Run `scripts/evaluate.py`. It sends chemistry questions to the model and scores the
+   answers.
+3. Read the scores in `outputs/<task>/<run>/`.
 
-## Install
+---
+
+## The tasks
+
+### MoleculeNet: molecular property prediction
+
+The model gets a molecule (as a SMILES string) and predicts one of its properties. Examples:
+"does this compound cross the blood-brain barrier?" or "how soluble is it in water?". There
+are 11 datasets:
+
+| Dataset | Type | What is predicted |
+| --- | --- | --- |
+| `bbbp` | classification | Blood-brain barrier penetration |
+| `bace_classification` | classification | Whether a compound inhibits human BACE-1 |
+| `clintox` | classification | FDA-approved drugs vs. candidates that failed clinical trials for toxicity |
+| `hiv` | classification | Inhibition of HIV replication (NCI AIDS antiviral screen) |
+| `tox21` | classification | Toxicity in nuclear-receptor and stress-response assays |
+| `sider` | classification | Side effects of marketed drugs, grouped by organ class |
+| `delaney` | regression | Aqueous solubility (ESOL) |
+| `freesolv` | regression | Hydration free energy in water |
+| `lipo` | regression | Lipophilicity (octanol/water distribution at pH 7.4) |
+| `bace_regression` | regression | Binding affinity to BACE-1 |
+| `clearance` | regression | In vitro intrinsic clearance in human liver microsomes |
+
+- **Few-shot:** `--shots 0,5` means the model is tested with 0 examples in the prompt
+  (zero-shot) and again with 5 worked examples (5-shot).
+- **Seeds:** each seed is a full pass with a different random choice of examples. Results
+  are averaged across seeds.
+- **Scores:** classification uses **ROC-AUC** (higher is better). Regression uses **RMSE**
+  (lower is better).
+
+### Single-step retrosynthesis
+
+The model gets a product molecule and must predict the reactants that make it. The test
+molecules come from **USPTO-50k**, a standard set of reactions taken from US patents.
+
+- **Top-1 / top-k exact match:** whether the model's first answer (or any of its first k
+  answers) matches the true reactants exactly.
+- **MaxFrag:** a looser score where only the largest reactant has to match
+  ([Tetko et al., 2020](https://doi.org/10.1038/s41467-020-19266-y)).
+
+### Comparable with earlier results
+
+Both tasks use the same prompts and metrics as the earlier Claude/GPT and DeepRetro runs, so
+a model evaluated here can be compared directly with those results. The DeepRetro code this
+needs is copied into `src/chemberta4/deepretro/`, not installed. See
+[DEEPRETRO.md](DEEPRETRO.md).
+
+## Glossary
+
+| Term | Meaning |
+| --- | --- |
+| **vLLM** | A fast server that runs open-source LLMs behind an OpenAI-compatible API. |
+| **SMILES** | A text format for writing a molecule, e.g. `CCO` is ethanol. |
+| **DeepRetro** | An earlier retrosynthesis project. Its prompts and pipeline are reused here. |
+| **AiZynthFinder (AZ)** | A template-based retrosynthesis tool. Used in `autosolve` mode. |
+| **Thinking model** | A model that writes out its reasoning before it answers (e.g. Qwen3 with thinking on). |
+| **Checkpoint** | The JSONL file of finished answers. It is what makes runs resumable. |
+
+---
+
+## Quickstart
+
+### 1. Install
 
 From the repo root:
 
@@ -26,31 +89,32 @@ uv pip install --python /venv/chemberta/bin/python \
     -e '.[score,wandb,hub,dev]'
 ```
 
-vLLM and the evaluation code share one environment. `score` pulls in deepchem,
-needed to build the MoleculeNet splits and to compute ROC-AUC and RMSE.
-`wandb` is optional, and `hub` is only needed to publish results to the
-Hugging Face Hub.
+vLLM and the evaluation code share one environment. The optional extras:
 
-## Prepare data
+- `score`: installs deepchem. It is needed to build the MoleculeNet splits and to compute
+  ROC-AUC and RMSE.
+- `wandb`: optional logging to Weights & Biases.
+- `hub`: only needed to publish results to the Hugging Face Hub.
+- `dev`: tests.
+
+Copy [.env.example](.env.example) to `.env` and fill in what you need (see
+[Environment variables](#environment-variables)).
+
+### 2. Prepare the data
 
 ```sh
 python scripts/prepare_data.py --task moleculenet      # DeepChem scaffold splits
 python scripts/prepare_data.py --task retrosynthesis   # copies USPTO-50k test sets
 ```
 
-Both write to `data/processed/`, which is gitignored. To reuse splits that
-already exist instead of rebuilding them:
+Both write to `data/processed/`, which is gitignored.
 
-```sh
-export CHEMBERTA4_MOLNET_DATA=~/Documents/DFS/DFS/molnet/datasets
-```
+- To reuse MoleculeNet splits that already exist instead of rebuilding them:
+  `export CHEMBERTA4_MOLNET_DATA=~/Documents/DFS/DFS/molnet/datasets`
+- The retrosynthesis sets are copied from a DeepRetro checkout. If it is not in the default
+  place, point `DEEPRETRO_DATA_DIR` at its `data/` directory.
 
-The retrosynthesis sets are copied from a DeepRetro checkout; point
-`DEEPRETRO_DATA_DIR` at its `data/` directory if it is not in the default place.
-
-## Run
-
-Start the server, then point the evaluation at it.
+### 3. Start the model server
 
 ```sh
 vllm serve Qwen/Qwen3-8B --dtype bfloat16 --max-model-len 17408 \
@@ -58,6 +122,8 @@ vllm serve Qwen/Qwen3-8B --dtype bfloat16 --max-model-len 17408 \
 
 export HOSTED_VLLM_API_BASE=http://localhost:8000/v1
 ```
+
+### 4. Run an evaluation
 
 ```sh
 # MoleculeNet: 50 molecules per dataset, zero- and 5-shot, one seed
@@ -69,16 +135,47 @@ python scripts/evaluate.py --task retrosynthesis \
     --model hosted_vllm/Qwen/Qwen3-8B --mode raw --limit 10
 ```
 
-Results land in `outputs/<task>/<run>/`: `results.jsonl` or
-`generations.jsonl` (the checkpoint), `results.csv`, `metrics.csv` or
-`summary.json`, and `perf.json` with `--perf`.
+### 5. Read the results
 
-### Resuming
+Each run writes to `outputs/<task>/<run>/`:
 
-Every run is resumable. Finished items are read back from the checkpoint and
-skipped, so an interrupted run is restarted with the same command. Items that
-failed at the API are deliberately not checkpointed, so they are retried; a run
-that hit a context-length error or a dropped connection heals itself.
+| File | Contents |
+| --- | --- |
+| `results.jsonl` / `generations.jsonl` | Every raw model answer. This is the checkpoint. |
+| `results.csv` | Per-molecule results as a table. |
+| `metrics.csv` / `summary.json` | The final scores. |
+| `perf.json` | Server throughput and latency (only with `--perf`). |
+
+## Common options
+
+| Flag | What it does |
+| --- | --- |
+| `--limit N` | Evaluate only the first N molecules (good for a quick test). |
+| `--datasets bbbp,hiv` | MoleculeNet: run only these datasets (default: all). |
+| `--shots 0,5,20` | MoleculeNet: number of examples in the prompt. |
+| `--seeds 0,1,2` | MoleculeNet: repeat with different example draws. |
+| `--mode raw\|pipeline\|autosolve` | Retrosynthesis: how answers are produced (see below). |
+| `--prompt deepretro\|ether0` | Retrosynthesis: which prompt to use. |
+| `--thinking` | Turn on reasoning for thinking models. |
+| `--workers N` | Number of requests sent at once (vLLM batches them). |
+| `--config file.yaml` | Load defaults from a YAML file. |
+
+Run `python scripts/evaluate.py --help` for every option.
+
+---
+
+## Guides
+
+### Resuming and re-scoring
+
+- **Every run is resumable.** Finished items are read back from the checkpoint and skipped.
+  To restart an interrupted run, run the same command again.
+- **Failed requests are retried.** Items that failed at the API are deliberately not
+  checkpointed, so a run that hit a context-length error or a dropped connection heals
+  itself on the next run.
+- **Re-scoring is free.** Scoring reads the checkpoint, so re-running a finished command
+  re-scores without sending any request. Use this to apply a metric change to results you
+  already have.
 
 ### Thinking models
 
@@ -89,35 +186,52 @@ python scripts/evaluate.py --task moleculenet --model hosted_vllm/Qwen/Qwen3-8B 
     --thinking --thinking-effort medium --max-output-tokens 16384
 ```
 
-With `--reasoning-parser` the trace comes back in its own field; without one it
-is split off the inline `<think>` block, which matters because the answer-JSON
-regex would otherwise match braces inside the reasoning. Each effort level
-writes to its own run directory, so levels never share a checkpoint.
-
-A reasoning trace that uses the whole token budget leaves no answer. Those
-records are marked `truncated` rather than `parse_error`, so the two causes stay
-distinguishable in the summary.
+- With `--reasoning-parser`, vLLM returns the reasoning in its own field. Without it, the
+  reasoning is split off the inline `<think>` block. This matters because otherwise the
+  answer parser could match braces inside the reasoning.
+- Each `--thinking-effort` level (`low`, `medium`, `high`, `max`) writes to its own run
+  directory, so levels never share a checkpoint.
+- If the reasoning uses up the whole token budget, there is no answer. Those records are
+  marked `truncated`, not `parse_error`, so you can tell the two apart in the summary.
 
 ### Retrosynthesis modes
 
 | Mode | What it measures |
 | --- | --- |
-| `raw` | One completion per molecule, parsed at scoring time. The model on its own. |
+| `raw` | One answer per molecule, parsed at scoring time. The model on its own. |
 | `pipeline` | DeepRetro's `llm_pipeline`: temperature retries, `validity_check`, and optional `--stability-check` and `--hallucination-check`. What the multi-step search would receive. |
-| `autosolve` | DeepRetro's `AutoSolver` at depth 1: AiZynthFinder first, the LLM only when AZ does not solve the target. Scores three views: `hybrid` (what `AutoSolver` returns), `az` and `llm`. Needs `pip install .[az]` and `AZ_MODELS_PATH`. |
+| `autosolve` | DeepRetro's `AutoSolver` at depth 1: AiZynthFinder first, and the LLM only when AZ does not solve the target. Scores three views: `hybrid` (what `AutoSolver` returns), `az` and `llm`. Needs `pip install .[az]` and `AZ_MODELS_PATH`. |
 
-`--prompt ether0` swaps in the prompt futurehouse/ether0 was trained on, which
-asks for a single reaction SMILES. Only top-1 is meaningful with it.
+`--prompt ether0` swaps in the prompt that futurehouse/ether0 was trained on. It asks for a
+single reaction SMILES, so only top-1 is meaningful with it.
 
-`autosolve` uses DeepRetro's defaults: the stability and hallucination checks are **on** (`--no-stability-check` / `--no-hallucination-check` turn them off), the AZ model is `Pistachio_100+`, and the LLM keeps the first `--top-k 3` pathways. The hallucination check *ranks* pathways (best first, flagged ones demoted, not dropped) once after the retry loop; in `pipeline` it drops them inside the loop and stays off unless asked for. The two give different top-1, so compare like with like. If AZ solves a target, its route is the answer even when that route has no reaction (a basic target), exactly as in `AutoSolver`. `DEEPRETRO.md` lists the rules and where this code deliberately differs.
+**`autosolve` defaults** (same as DeepRetro):
 
-AZ results are cached in `<out-root>/az_cache/<data>_<az-model>.jsonl` and shared across LLM runs over the same data, so a second model does not repeat the search.
+- The stability and hallucination checks are **on**. Turn them off with
+  `--no-stability-check` / `--no-hallucination-check`.
+- The AZ model is `Pistachio_100+`.
+- The LLM keeps the first `--top-k 3` pathways.
+
+**How the hallucination check differs between modes:**
+
+- In `autosolve`, it *ranks* pathways once after the retry loop: best first, flagged ones
+  moved down, not removed.
+- In `pipeline`, it *drops* flagged pathways inside the loop, and is off unless you ask
+  for it.
+- The two give different top-1 scores, so compare like with like.
+
+If AZ solves a target, its route is the answer, even when that route has no reaction (a
+basic target), exactly as in `AutoSolver`. [DEEPRETRO.md](DEEPRETRO.md) lists the rules and
+where this code deliberately differs.
+
+AZ results are cached in `<out-root>/az_cache/<data>_<az-model>.jsonl` and shared across LLM
+runs on the same data, so a second model does not repeat the search.
 
 ### Getting the AiZynthFinder models
 
-`autosolve` needs `<AZ_MODELS_PATH>/<az-model>/config.yml`. Set `AZ_MODELS_PATH` in the shell
-or in `.env`. A relative path is resolved against the directory you run from, normally the
-repo root, so run every command from the same place; an absolute path also works.
+`autosolve` needs `<AZ_MODELS_PATH>/<az-model>/config.yml`. Set `AZ_MODELS_PATH` in the
+shell or in `.env`. A relative path is resolved against the directory you run from (normally
+the repo root), so run every command from the same place. An absolute path also works.
 
 **USPTO (public):**
 
@@ -128,25 +242,36 @@ python -m aizynthfinder.tools.download_public_data "$AZ_MODELS_PATH/USPTO"
 python scripts/evaluate.py --task retrosynthesis --mode autosolve --az-model USPTO ...
 ```
 
-The target must be the `USPTO` subfolder, so that the model name matches the folder.
+The download target must be the `USPTO` subfolder, so that the model name matches the folder.
 
-**Pistachio_25 / 50 / 100 / 100+ (private):** these are DeepRetro's own models and are not
-public. DeepRetro's `data/download_pistachio_models.py` fetches them from a private S3 bucket
-with `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. It copies the USPTO `config.yml` into each
-folder and edits its paths, so download USPTO first. Without that access, `autosolve`'s default
-`--az-model Pistachio_100+` fails with "No AiZynthFinder config"; pass `--az-model USPTO`.
+**Pistachio_25 / 50 / 100 / 100+ (private):**
 
-The public USPTO templates come from USPTO data, so AZ may have seen these test reactions.
-Its `az` and `hybrid` scores with `USPTO` are likely inflated; prefer a Pistachio model for a
-fair comparison.
+- These are DeepRetro's own models and are not public.
+- DeepRetro's `data/download_pistachio_models.py` fetches them from a private S3 bucket
+  using `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
+- It copies the USPTO `config.yml` into each folder and edits its paths, so download USPTO
+  first.
+- Without that access, the default `--az-model Pistachio_100+` fails with
+  "No AiZynthFinder config". Pass `--az-model USPTO` instead.
 
-### Scoring without generating
+> **Note:** the public USPTO templates come from USPTO data, so AZ may have seen these test
+> reactions. Its `az` and `hybrid` scores with `USPTO` are likely inflated. Prefer a
+> Pistachio model for a fair comparison.
 
-Scoring reads the checkpoint, so re-running the same command after the
-generation finishes re-scores without sending a request. That is how to apply a
-metric change to results you already have.
+### Using a config file
 
-## Publishing to the Hub
+```sh
+python scripts/evaluate.py --task moleculenet \
+    --config configs/evaluation/open_source/vllm_example.yaml
+```
+
+- Command-line flags override the file.
+- The server URL is not in the config. It comes from `HOSTED_VLLM_API_BASE`, so one config
+  works wherever the server runs.
+- See [vllm_example.yaml](configs/evaluation/open_source/vllm_example.yaml) for every
+  setting with comments.
+
+### Publishing to the Hugging Face Hub
 
 ```sh
 export HF_TOKEN=hf_...          # a write token
@@ -155,39 +280,45 @@ python scripts/evaluate.py --task moleculenet --model hosted_vllm/Qwen/Qwen3-8B 
     --shots 0,5 --limit 50 --hf-repo Harindhar10/chemberta4-evals
 ```
 
-`--hf-repo` pushes the finished run to a **public** dataset repo, which is
-created on first use. Every run shares that one repo:
+`--hf-repo` pushes the finished run to a **public** dataset repo, created on first use. All
+runs share that one repo:
 
 - The run's files (raw JSONL, scores, `run_config.json`, `perf.json`) go under
   `<task>/<run_id>/`.
-- The dataset card gets a section for the run with its hyperparameters and
-  metrics. For MoleculeNet that is the mean and std across seeds.
-- Each run is a dataset-viewer config, so the generations can be browsed on
-  the Hub or loaded directly:
+- The dataset card gets a section for the run with its hyperparameters and metrics. For
+  MoleculeNet that is the mean and std across seeds.
+- Each run is a dataset-viewer config, so the generations can be browsed on the Hub or
+  loaded directly:
 
 ```python
 from datasets import load_dataset
 ds = load_dataset("Harindhar10/chemberta4-evals", "moleculenet--Qwen3-8B")
 ```
 
-Pushing the same run again replaces its files and its card section in one
-commit. The token is checked before generation starts. A failed upload only
-prints a warning, because the scores are already on disk. Re-running the
-command re-scores and re-pushes without sending a request.
+Good to know:
 
-`run_id` is the local run-folder name. Settings not in that name share a run:
-`--shots`, `--seeds` and `--limit` for MoleculeNet, and the thinking effort for
-retrosynthesis. Two such runs replace each other locally and on the Hub.
+- Pushing the same run again replaces its files and its card section in one commit.
+- The token is checked before generation starts.
+- A failed upload only prints a warning, because the scores are already on disk.
+  Re-running the command re-scores and re-pushes without sending a request.
+- `run_id` is the local run-folder name. Settings not in that name share a run: `--shots`,
+  `--seeds` and `--limit` for MoleculeNet, and the thinking effort for retrosynthesis. Two
+  such runs replace each other, locally and on the Hub.
 
-## Configs
+---
 
-```sh
-python scripts/evaluate.py --task moleculenet \
-    --config configs/evaluation/open_source/vllm_example.yaml
-```
+## Environment variables
 
-Command-line flags win over the file. The server URL is not in the config; it
-comes from `HOSTED_VLLM_API_BASE`, so one config works wherever the server runs.
+| Variable | Used for |
+| --- | --- |
+| `HOSTED_VLLM_API_BASE` | URL of the vLLM server, e.g. `http://localhost:8000/v1`. Required. |
+| `CHEMBERTA4_MOLNET_DATA` | Reuse existing MoleculeNet splits from this folder. |
+| `DEEPRETRO_DATA_DIR` | DeepRetro's `data/` folder, if not in the default place. |
+| `AZ_MODELS_PATH` | Folder holding the AiZynthFinder models (`autosolve`). |
+| `AZ_MODEL_CONFIG_PATH` | Fallback AZ config, used only when the one above is missing. |
+| `HF_TOKEN` | Hugging Face write token, for `--hf-repo`. |
+| `WANDB_API_KEY` | Weights & Biases key, for `--wandb-project`. |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | Optional Langfuse tracing. |
 
 ## Tests
 
@@ -195,32 +326,42 @@ comes from `HOSTED_VLLM_API_BASE`, so one config works wherever the server runs.
 pytest
 ```
 
-Three groups: the doctests carried by our modules and the copied ones;
-scoring tests that pin down the exact-match, MaxFrag and parse-failure rules;
-and prompt-parity tests that fail if the copied MoleculeNet prompt drifts from
-the DFS `molnet` package or the copied retrosynthesis prompt drifts from
-DeepRetro. The parity tests skip when those checkouts are absent.
+There are three groups:
 
-## Layout
+- **Doctests** in our modules and in the copied DeepRetro modules.
+- **Scoring tests** that pin down the exact-match, MaxFrag and parse-failure rules.
+- **Prompt-parity tests** that fail if the copied MoleculeNet prompt drifts from the DFS
+  `molnet` package, or the copied retrosynthesis prompt drifts from DeepRetro. They are
+  skipped when those checkouts are absent.
+
+## Project layout
 
 ```
 src/chemberta4/
-  cli.py                      task + backend + run loop, wired together
+  cli.py                      wires together the task, the backend and the run loop
   tasks/moleculenet/          config, data, prompts, metrics, run
-  tasks/retrosynthesis/       data, run
+  tasks/retrosynthesis/       data, run, autosolve, AiZynthFinder wrapper
   evaluation/
     backends/base.py          ModelBackend.generate() -> Response
-    backends/vllm_server.py   the vLLM OpenAI-compatible server
-    runner.py                 resumable threaded generation loop
+    backends/vllm_server.py   client for the vLLM OpenAI-compatible server
+    runner.py                 resumable, threaded generation loop
     thinking.py               splits a reasoning trace from the answer
-    perf.py                   vLLM /metrics during a run
-    reporting.py              W&B
+    perf.py                   reads vLLM /metrics during a run
+    reporting.py              Weights & Biases logging
     hub.py                    Hugging Face Hub dataset repo and card
   deepretro/                  copied from DeepRetro; see DEEPRETRO.md
 scripts/                      prepare_data.py, evaluate.py
+configs/                      example YAML configs
+tests/                        pytest suite
 ```
 
-## Not here yet
+## Roadmap
 
-ChemLLMBench (17 tasks in 7 families), closed-source backends for Claude and
-GPT, and training. The repository map artifact covers the intended shape.
+Coming next:
+
+- **ChemLLMBench**: 17 tasks in 7 families.
+- **ChemEval**.
+- **Closed-source backends** for Claude and GPT.
+- **Model training**: mid- and post-training of open-source models.
+
+The repository map artifact covers the intended shape.
