@@ -193,6 +193,10 @@ def stub_pipeline(monkeypatch, pathways: list) -> list[dict]:
 
     def fake_pipeline(smiles, **kwargs):
         calls.append({"smiles": smiles, **kwargs})
+        if kwargs.get("trace") is not None:
+            kwargs["trace"].append(
+                {"attempt": 0, "temperature": 0.0, "model": "m", "status": 200, "raw": "RAW"}
+            )
         return list(pathways), ["e"] * len(pathways), [0.1] * len(pathways)
 
     monkeypatch.setattr(llm, "llm_pipeline", fake_pipeline)
@@ -257,6 +261,24 @@ def test_autosolve_slices_first_then_skips_empty_pathways(monkeypatch):
     stub_pipeline(monkeypatch, [[], A, B, C])
     rec = task.generate_one(ROW, 0, model="m", mode="autosolve", top_k=3)
     assert rec["proposals"] == [A, B]
+
+
+def test_pipeline_mode_logs_raw_text_explanations_and_confidence(monkeypatch):
+    stub_pipeline(monkeypatch, [A, B])
+    rec = task.generate_one(ROW, 0, model="m", mode="pipeline")
+    assert [a["raw"] for a in rec["attempts"]] == ["RAW"]
+    assert rec["explanations"] == ["e", "e"]
+    assert rec["confidence"] == [0.1, 0.1]
+    assert "llm_pathways" not in rec
+
+
+def test_autosolve_logs_the_pipeline_output_before_ranking(monkeypatch, stub_score):
+    stub_pipeline(monkeypatch, [B, A, C])
+    rec = task.generate_one(ROW, 0, model="m", mode="autosolve", hallucination_check=True)
+    assert rec["proposals"] == [A, C, B]  # ranked
+    assert rec["llm_pathways"] == [B, A, C]  # as the pipeline returned them
+    assert rec["attempts"][0]["raw"] == "RAW"
+    assert len(rec["explanations"]) == len(rec["confidence"]) == 3
 
 
 def test_pipeline_mode_is_not_capped(monkeypatch):

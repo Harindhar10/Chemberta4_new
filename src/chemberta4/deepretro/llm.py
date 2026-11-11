@@ -571,6 +571,7 @@ def llm_pipeline(
     prompt_mode: PromptMode | None = None,
     enable_thinking: bool = True,
     max_output_tokens: int | None = None,
+    trace: list[dict[str, Any]] | None = None,
 ) -> tuple[list[Pathway], list[str], list[float]]:
     """Run the end-to-end single-step retrosynthesis LLM pipeline.
 
@@ -592,6 +593,11 @@ def llm_pipeline(
         Whether provider-supported reasoning controls should be sent.
     max_output_tokens : int, optional
         Output token override for each LLM call.
+    trace : list of dict, optional
+        When given, one dict is appended per attempt with ``attempt``,
+        ``temperature``, ``model``, ``status`` (the outcome of that attempt: the
+        failing status, 204 if every pathway was filtered out, else 200) and ``raw`` (the response
+        text, ``None`` if the call produced none). The return value is unchanged.
 
     Returns
     -------
@@ -632,11 +638,21 @@ def llm_pipeline(
         )
         status = response.status_code
         response_text = response.text
+        entry: dict[str, Any] = {
+            "attempt": attempt,
+            "temperature": temperature,
+            "model": current_model,
+            "status": status,
+            "raw": response_text,
+        }
+        if trace is not None:
+            trace.append(entry)
         if status != 200:
             logger.warning("LLM call failed", status_code=status)
             continue
 
         status, _, json_content = interface.parse_response(response_text)
+        entry["status"] = status
         if status != 200:
             logger.warning("Response parsing failed", status_code=status)
             continue
@@ -644,6 +660,7 @@ def llm_pipeline(
         status, res_molecules, res_explanations, res_confidence = validate_split_json(
             json_content
         )
+        entry["status"] = status
         if status != 200:
             logger.warning("JSON validation failed", status_code=status)
             continue
@@ -679,6 +696,8 @@ def llm_pipeline(
                 )
             )
 
+        if not output_pathways:
+            entry["status"] = 204  # parsed, but every pathway was filtered out
         if output_pathways:
             logger.info(
                 "Pipeline succeeded",

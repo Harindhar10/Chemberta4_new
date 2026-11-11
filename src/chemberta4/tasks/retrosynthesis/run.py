@@ -89,6 +89,19 @@ def generate_one(
     Imported lazily because the copied LLM modules pull in litellm, rdkit and
     structlog; a ``--help`` or a data-preparation run should not pay for that.
     ``top_k`` caps the proposals in ``autosolve`` mode only.
+
+    ``raw`` records carry ``raw`` (the response text). ``pipeline`` and ``autosolve``
+    records carry the parsed ``proposals`` plus, for tracing:
+
+    ``attempts``
+        One entry per ``llm_pipeline`` try (``attempt``, ``temperature``, ``model``,
+        ``status``, ``raw``), including the failed retries.
+    ``explanations``, ``confidence``
+        As ``llm_pipeline`` returned them, aligned with its pathways.
+    ``llm_pathways`` (``autosolve`` only)
+        Those pathways before canonicalization, ranking and the ``top_k`` cap, which
+        reorder and drop, so ``explanations`` and ``confidence`` do not line up with
+        ``proposals``.
     """
     from chemberta4.deepretro.llm import call_LLM, llm_pipeline
 
@@ -131,7 +144,8 @@ def generate_one(
         # AutoSolver keeps the hallucination gate out of the retry loop: a rejection
         # there cannot trigger another attempt. So the loop gets validity and
         # stability only, and the gate runs once on what comes back.
-        pathways, _explanations, _confidence = llm_pipeline(
+        attempts: list[dict[str, Any]] = []
+        pathways, explanations, confidence = llm_pipeline(
             target,
             model=model,
             messages=messages,
@@ -139,15 +153,28 @@ def generate_one(
             max_output_tokens=max_output_tokens,
             stability_check=stability_check,
             hallucination_check=False,
+            trace=attempts,
         )
+        # ``explanations`` and ``confidence`` line up with these pathways, not with
+        # the ranked, capped ``proposals`` below.
+        llm_pathways = list(pathways)
         pathways = canonicalize_pathways(pathways)
         if hallucination_check:
             pathways = rank_hallucination(target, pathways)
         # solve_multiple keeps the first k pathways, then skips any with no reactants.
         pathways = [p for p in pathways[:top_k] if p]
-        return {**record, "proposals": pathways, "status": 200 if pathways else 504}
+        return {
+            **record,
+            "proposals": pathways,
+            "status": 200 if pathways else 504,
+            "attempts": attempts,
+            "llm_pathways": llm_pathways,
+            "explanations": explanations,
+            "confidence": confidence,
+        }
 
-    pathways, _explanations, _confidence = llm_pipeline(
+    attempts = []
+    pathways, explanations, confidence = llm_pipeline(
         smiles,
         model=model,
         messages=messages,
@@ -155,8 +182,16 @@ def generate_one(
         max_output_tokens=max_output_tokens,
         stability_check=stability_check,
         hallucination_check=hallucination_check,
+        trace=attempts,
     )
-    return {**record, "proposals": pathways, "status": 200 if pathways else 504}
+    return {
+        **record,
+        "proposals": pathways,
+        "status": 200 if pathways else 504,
+        "attempts": attempts,
+        "explanations": explanations,
+        "confidence": confidence,
+    }
 
 
 def keep_record(record: dict[str, Any]) -> bool:
