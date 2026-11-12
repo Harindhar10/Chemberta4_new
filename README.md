@@ -1,9 +1,9 @@
 # chemberta4
 
 **chemberta4 is a library for benchmarking open-source models on chemistry, and for
-mid- and post-training them.** Today it evaluates models on two tasks, MoleculeNet and
-single-step retrosynthesis. More is on the way: ChemLLMBench, ChemEval, and model training
-(see [Roadmap](#roadmap)).
+mid- and post-training them.** Today it evaluates models on three benchmarks:
+MoleculeNet, single-step retrosynthesis and ChemLLMBench. More is on the way: ChemEval and
+model training (see [Roadmap](#roadmap)).
 
 **How it works, in three steps:**
 
@@ -53,12 +53,43 @@ molecules come from **USPTO-50k**, a standard set of reactions taken from US pat
 - **MaxFrag:** a looser score where only the largest reactant has to match
   ([Tetko et al., 2020](https://doi.org/10.1038/s41467-020-19266-y)).
 
+### ChemLLMBench: 18 tasks in 7 families
+
+A broad chemistry benchmark, ported from the ChemLLMBench reference implementation. Every
+task has a fixed test set of 100 items. Few-shot examples are drawn either at random or by
+scaffold similarity.
+
+| Group | Task keys | Headline metric |
+| --- | --- | --- |
+| `name_prediction` | `smiles_to_iupac`, `iupac_to_smiles`, `smiles_to_formula`, `iupac_to_formula` | accuracy |
+| `property_prediction` | `bbbp`, `bace`, `tox21`, `hiv`, `clintox` | accuracy (Yes/No) |
+| `reaction_prediction` | `reaction_prediction` (USPTO forward) | top-1 accuracy |
+| `retrosynthesis` | `retrosynthesis` (USPTO-50k) | top-1 accuracy |
+| `reaction_component_selection` | `reactant_selection`, `ligand_selection`, `solvent_selection` | accuracy (zero-shot only) |
+| `molecule_design` | `mol_caption` (SMILES → text), `mol_design` (text → SMILES) | BLEU-4 / exact match |
+| `yield_prediction` | `Buchwald-Hartwig`, `Suzuki-Miyaura` | accuracy (high yield or not) |
+
+- **Selecting tasks:** `--subtasks` takes task keys and group names, comma-separated
+  (default: `all`).
+- **Few-shot:** `--shots 0,10` sets the number of examples (default `0`), and
+  `--strategy random|scaffold` sets how they are chosen. The reference refuses scaffold
+  sampling for `mol_design`, so that combination is skipped with a message. The yield
+  tasks fall back to random.
+- **Secondary metrics:** these go into `metrics.csv`. Examples are F1 for property
+  prediction, invalid-SMILES % for reactions, and ROUGE, METEOR, Tanimoto similarities,
+  validity and FCD for molecule design.
+- **The `chemllmbench` extra** is needed to score `mol_caption` and `mol_design`
+  (`pip install -e '.[chemllmbench]'`). FCD also needs `fcd` to be importable, otherwise
+  it is NaN.
+
 ### Comparable with earlier results
 
-Both tasks use the same prompts and metrics as the earlier Claude/GPT and DeepRetro runs, so
-a model evaluated here can be compared directly with those results. The DeepRetro code this
-needs is copied into `src/chemberta4/deepretro/`, not installed. See
-[DEEPRETRO.md](DEEPRETRO.md).
+MoleculeNet and retrosynthesis use the same prompts and metrics as the earlier Claude/GPT
+and DeepRetro runs, so a model evaluated here can be compared directly with those results.
+The DeepRetro code this needs is copied into `src/chemberta4/deepretro/`, not installed. See
+[DEEPRETRO.md](DEEPRETRO.md). In the same way, ChemLLMBench's prompts, parsers and metrics
+are copied from its reference implementation (see [CHEMLLMBENCH.md](CHEMLLMBENCH.md)), so
+scores line up with that repository's leaderboard.
 
 ## Glossary
 
@@ -86,13 +117,14 @@ uv pip install --python /venv/chemberta/bin/python --upgrade pip
 
 uv pip install --python /venv/chemberta/bin/python \
     vllm \
-    -e '.[score,wandb,hub,dev]'
+    -e '.[score,chemllmbench,wandb,hub,dev]'
 ```
 
 vLLM and the evaluation code share one environment. The optional extras:
 
 - `score`: installs deepchem. It is needed to build the MoleculeNet splits and to compute
   ROC-AUC and RMSE.
+- `chemllmbench`: scikit-learn plus the caption and design metrics for ChemLLMBench.
 - `wandb`: optional logging to Weights & Biases.
 - `hub`: only needed to publish results to the Hugging Face Hub.
 - `dev`: tests.
@@ -105,9 +137,16 @@ Copy [.env.example](.env.example) to `.env` and fill in what you need (see
 ```sh
 python scripts/prepare_data.py --task moleculenet      # DeepChem scaffold splits
 python scripts/prepare_data.py --task retrosynthesis   # copies USPTO-50k test sets
+python scripts/prepare_data.py --task chemllmbench     # downloads ChemLLMBench sources
 ```
 
-Both write to `data/processed/`, which is gitignored.
+MoleculeNet writes to `data/processed/`, which is gitignored.
+
+- The retrosynthesis and ChemLLMBench test sets are committed. For ChemLLMBench,
+  `prepare_data` downloads the files its loaders fetch from the web into
+  `data/raw/chemllmbench/` (gitignored). These are the DeepChem CSVs, ChEBI-20 and the
+  USPTO training pickles (about 470 MB, used only for few-shot reaction prompts). A run
+  that needs a file it does not have downloads it itself.
 
 - To reuse MoleculeNet splits that already exist instead of rebuilding them:
   `export CHEMBERTA4_MOLNET_DATA=~/Documents/DFS/DFS/molnet/datasets`
@@ -133,6 +172,10 @@ python scripts/evaluate.py --task moleculenet \
 # Retrosynthesis: 10 molecules, raw mode
 python scripts/evaluate.py --task retrosynthesis \
     --model hosted_vllm/Qwen/Qwen3-8B --mode raw --limit 10
+
+# ChemLLMBench: every task, zero- and 10-shot, random examples
+python scripts/evaluate.py --task chemllmbench \
+    --model hosted_vllm/Qwen/Qwen3-8B --shots 0,10 --strategy random
 ```
 
 ### 5. Read the results
@@ -143,6 +186,7 @@ Each run writes to `outputs/<task>/<run>/`:
 | --- | --- |
 | `results.jsonl` / `generations.jsonl` | Every raw model answer. This is the checkpoint. |
 | `results.csv` | Per-molecule results as a table. |
+| `predictions/` | ChemLLMBench: one CSV of raw answers and parsed predictions per task, k and strategy. |
 | `metrics.csv` / `summary.json` | The final scores. |
 | `perf.json` | Server throughput and latency (only with `--perf`). |
 
@@ -154,6 +198,8 @@ Each run writes to `outputs/<task>/<run>/`:
 | `--datasets bbbp,hiv` | MoleculeNet: run only these datasets (default: all). |
 | `--shots 0,5,20` | MoleculeNet: number of examples in the prompt. |
 | `--seeds 0,1,2` | MoleculeNet: repeat with different example draws. |
+| `--subtasks bbbp,name_prediction` | ChemLLMBench: task keys or groups (default: all). |
+| `--strategy random\|scaffold` | ChemLLMBench: how few-shot examples are chosen. |
 | `--mode raw\|pipeline\|autosolve` | Retrosynthesis: how answers are produced (see below). |
 | `--prompt deepretro\|ether0` | Retrosynthesis: which prompt to use. |
 | `--thinking` | Turn on reasoning for thinking models. |
@@ -314,6 +360,8 @@ Good to know:
 | `HOSTED_VLLM_API_BASE` | URL of the vLLM server, e.g. `http://localhost:8000/v1`. Required. |
 | `CHEMBERTA4_MOLNET_DATA` | Reuse existing MoleculeNet splits from this folder. |
 | `DEEPRETRO_DATA_DIR` | DeepRetro's `data/` folder, if not in the default place. |
+| `CHEMBERTA4_CHEMLLMBENCH_DATA` / `CHEMBERTA4_CHEMLLMBENCH_RAW` | Override the ChemLLMBench committed / downloaded data folders. |
+| `CHEMLLMBENCH_SRC_DIR` | ChemLLMBench reference checkout, for the parity tests and `--copy-shipped`. |
 | `AZ_MODELS_PATH` | Folder holding the AiZynthFinder models (`autosolve`). |
 | `AZ_MODEL_CONFIG_PATH` | Fallback AZ config, used only when the one above is missing. |
 | `HF_TOKEN` | Hugging Face write token, for `--hf-repo`. |
@@ -331,8 +379,9 @@ There are three groups:
 - **Doctests** in our modules and in the copied DeepRetro modules.
 - **Scoring tests** that pin down the exact-match, MaxFrag and parse-failure rules.
 - **Prompt-parity tests** that fail if the copied MoleculeNet prompt drifts from the DFS
-  `molnet` package, or the copied retrosynthesis prompt drifts from DeepRetro. They are
-  skipped when those checkouts are absent.
+  `molnet` package, the copied retrosynthesis prompt drifts from DeepRetro, or the
+  ChemLLMBench prompts drift from the reference checkout. They are skipped when those
+  checkouts are absent.
 
 ## Project layout
 
@@ -341,6 +390,7 @@ src/chemberta4/
   cli.py                      wires together the task, the backend and the run loop
   tasks/moleculenet/          config, data, prompts, metrics, run
   tasks/retrosynthesis/       data, run, autosolve, AiZynthFinder wrapper
+  tasks/chemllmbench/         copied task families, registry, run; see CHEMLLMBENCH.md
   evaluation/
     backends/base.py          ModelBackend.generate() -> Response
     backends/vllm_server.py   client for the vLLM OpenAI-compatible server
@@ -359,7 +409,6 @@ tests/                        pytest suite
 
 Coming next:
 
-- **ChemLLMBench**: 17 tasks in 7 families.
 - **ChemEval**.
 - **Closed-source backends** for Claude and GPT.
 - **Model training**: mid- and post-training of open-source models.

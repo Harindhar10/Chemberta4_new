@@ -194,6 +194,98 @@ def run_moleculenet(args: Namespace) -> None:
 
 
 # --------------------------------------------------------------------------
+# ChemLLMBench
+# --------------------------------------------------------------------------
+def run_chemllmbench(args: Namespace) -> None:
+    """Generate and score the ChemLLMBench tasks."""
+    from chemberta4.tasks.chemllmbench import run as task
+    from chemberta4.tasks.chemllmbench.registry import resolve
+
+    try:
+        tasks = resolve(args.subtasks)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    shots = [int(s) for s in str(args.shots if args.shots is not None else "0").split(",")]
+
+    # Same naming as MoleculeNet: k and strategy live in each record, so one run
+    # directory holds every shot count and strategy for a model and effort level.
+    model_slug = args.model.rstrip("/").split("/")[-1]
+    run_id = f"{model_slug}{f'_think_{args.thinking_effort}' if args.thinking else ''}"
+    run_dir = Path(args.out_root) / "chemllmbench" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    api_key = reporting.wandb_available(args.wandb_api_key) if args.wandb_project else None
+    if args.wandb_project and not api_key:
+        print("no W&B key (--wandb-api-key or $WANDB_API_KEY); this run will not be logged")
+    if api_key:
+        reporting.login(api_key)  # fail on a bad key before spending GPU time
+    hf_token = hub_setup(args)
+
+    requests = task.build_requests(tasks, shots, args.strategy, args.limit)
+    done = task.done_keys(runner.load_jsonl(run_dir / "results.jsonl"))
+    todo = runner.pending(requests, done, task.resume_key)
+    announce(args, run_dir, len(requests))
+    print(f"subtasks    : {', '.join(tasks)}")
+    print(f"shots       : {shots}   strategy: {args.strategy}")
+    print(f"{len(requests) - len(todo)} already done, generating {len(todo)}")
+
+    backend = make_backend(args, temperature=0.0)
+    perf_data = None
+    with perf_mod.perf_window(args.perf) as perf:
+        counts = runner.generate(
+            items=todo,
+            worker=lambda request: task.generate_one(
+                backend,
+                request,
+                run_id=run_id,
+                thinking=args.thinking,
+                thinking_effort=args.thinking_effort,
+            ),
+            out_path=run_dir / "results.jsonl",
+            workers=args.workers,
+            keep=lambda rec: rec["status"] != "api_error",
+            status_of=lambda rec: rec["status"],
+        )
+        if perf is not None and todo:
+            completed = sum(v for k, v in counts.items() if k != "dropped")
+            perf_data = (perf_mod.write_perf(perf, run_dir, completed), perf.samples)
+
+    metrics, _ = task.evaluate_run(run_dir, keys={task.resume_key(r) for r in requests})
+    print()
+    print(task.report(metrics))
+    if not metrics.empty:
+        metrics.to_csv(run_dir / "metrics.csv", index=False)
+        print(f"\nwrote {run_dir / 'metrics.csv'}, summary.json and predictions/")
+
+    config = run_config(
+        args,
+        run_dir,
+        temperature=0.0,
+        subtasks=tasks,
+        shots=shots,
+        strategy=args.strategy,
+    )
+    if args.wandb_project and api_key:
+        reporting.log_run(
+            project=args.wandb_project,
+            run_name=f"chemllmbench_{model_slug}",
+            config=config,
+            metrics=metrics,
+            perf=perf_data,
+        )
+    if hf_token:
+        hub.push_run(
+            repo_id=args.hf_repo,
+            task="chemllmbench",
+            run_id=run_id,
+            run_dir=run_dir,
+            config=config,
+            metrics_md=hub.chemllmbench_metrics_md(metrics),
+            token=hf_token,
+        )
+
+
+# --------------------------------------------------------------------------
 # Retrosynthesis
 # --------------------------------------------------------------------------
 def az_cache_path(args: Namespace, data_slug: str) -> Path:

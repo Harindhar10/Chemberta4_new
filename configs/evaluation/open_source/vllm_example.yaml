@@ -39,6 +39,10 @@ top_k: 3                     # LLM pathways kept per molecule, as DeepRetro's ba
 az_workers: 4                # each worker loads its own AZ model and stock
 # az_cache: null             # default: <out-root>/az_cache/<data>_<az_model>.jsonl, shared across LLM runs
 
+# ChemLLMBench (uses `shots` and `limit` above too; shots default to 0 when unset)
+# subtasks: all              # task keys or groups, e.g. "property_prediction,smiles_to_iupac"
+# strategy: random           # random | scaffold
+
 # Observability
 perf: false                  # scrape the server's /metrics during generation
 # wandb_project: chemberta4-eval

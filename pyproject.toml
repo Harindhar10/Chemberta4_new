@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "chemberta4"
 version = "0.1.0"
-description = "Evaluation of open-source LLMs on MoleculeNet and single-step retrosynthesis, served by vLLM"
+description = "Evaluation of open-source LLMs on MoleculeNet, single-step retrosynthesis and ChemLLMBench, served by vLLM"
 requires-python = ">=3.11"
 dependencies = [
     "pandas",
@@ -25,6 +25,9 @@ wandb = ["wandb"]
 hub = ["huggingface_hub>=0.34"]
 # autosolve mode: AiZynthFinder, plus the model files named by AZ_MODELS_PATH.
 az = ["aizynthfinder"]
+# ChemLLMBench: scikit-learn scores the Yes/No tasks; the rest score molecule
+# captioning and design (BLEU/ROUGE/METEOR, Levenshtein, FCD).
+chemllmbench = ["scikit-learn", "evaluate", "Levenshtein", "rouge-score", "nltk", "fcd"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

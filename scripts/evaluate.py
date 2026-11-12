@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Evaluate a vLLM-served model on MoleculeNet or single-step retrosynthesis.
+"""Evaluate a vLLM-served model on MoleculeNet, single-step retrosynthesis or ChemLLMBench.
 
 Start the server first, in its own environment::
 
@@ -16,7 +16,10 @@ then point this at it::
     python scripts/evaluate.py --task retrosynthesis \
         --model hosted_vllm/Qwen/Qwen3-8B --mode raw --limit 10
 
-Both tasks are resumable: finished items are read back from the run's JSONL
+    python scripts/evaluate.py --task chemllmbench \
+        --model hosted_vllm/Qwen/Qwen3-8B --subtasks property_prediction --shots 0,10
+
+Every task is resumable: finished items are read back from the run's JSONL
 checkpoint and skipped, so an interrupted run is restarted with the same
 command. Items that failed at the API are not checkpointed and are retried.
 
@@ -32,6 +35,10 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Python puts this script's directory first on sys.path, where this file would
+# shadow the Hugging Face `evaluate` package that ChemLLMBench's caption and
+# design metrics import. Nothing here imports a sibling script, so drop it.
+sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != Path(__file__).resolve().parent]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 
@@ -51,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--task", required=True, choices=["moleculenet", "retrosynthesis"])
+    p.add_argument("--task", required=True, choices=["moleculenet", "retrosynthesis", "chemllmbench"])
     p.add_argument("--model", help="litellm id, e.g. hosted_vllm/Qwen/Qwen3-8B")
     p.add_argument("--config", help="YAML defaults; command-line flags win")
     p.add_argument("--out-root", default=None, help="default: outputs/ in the repo")
@@ -78,7 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     mol = p.add_argument_group("moleculenet")
     mol.add_argument("--datasets", default=None, help="comma-separated; default is all")
-    mol.add_argument("--shots", default=None, help="comma-separated k values; 0 = zero-shot")
+    mol.add_argument(
+        "--shots",
+        default=None,
+        help="comma-separated k values; 0 = zero-shot (also used by chemllmbench, default 0)",
+    )
     mol.add_argument("--seeds", default=None, help="comma-separated; each seed is a full pass")
     mol.add_argument("--split", default=None)
 
@@ -123,6 +134,19 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: <out-root>/az_cache/<data>_<az-model>.jsonl)",
     )
 
+    bench = p.add_argument_group("chemllmbench")
+    bench.add_argument(
+        "--subtasks",
+        default=None,
+        help="comma-separated task keys or groups, e.g. bbbp,name_prediction (default: all)",
+    )
+    bench.add_argument(
+        "--strategy",
+        choices=["random", "scaffold"],
+        default=None,
+        help="few-shot example selection (default: random); selection tasks are zero-shot only",
+    )
+
     obs = p.add_argument_group("observability")
     obs.add_argument(
         "--perf",
@@ -153,6 +177,8 @@ def resolve(args: argparse.Namespace, config: dict) -> argparse.Namespace:
         "shots": None,
         "seeds": "0",
         "datasets": None,
+        "subtasks": "all",
+        "strategy": "random",
         "mode": "raw",
         "prompt": "deepretro",
         "data": None,
@@ -195,6 +221,10 @@ def main(argv: list[str] | None = None) -> None:
         from chemberta4.cli import run_moleculenet
 
         run_moleculenet(args)
+    elif args.task == "chemllmbench":
+        from chemberta4.cli import run_chemllmbench
+
+        run_chemllmbench(args)
     else:
         from chemberta4.cli import run_retrosynthesis
 

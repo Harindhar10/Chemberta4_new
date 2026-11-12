@@ -38,7 +38,8 @@ CARD_TEMPLATE = """\
 # chemberta4 evaluations
 
 Raw generations and scores from evaluating open-source LLMs, served by vLLM, on
-MoleculeNet property prediction and USPTO-50k single-step retrosynthesis.
+MoleculeNet property prediction, USPTO-50k single-step retrosynthesis and
+ChemLLMBench.
 
 Each run lives under `<task>/<run_id>/`:
 
@@ -166,6 +167,34 @@ def moleculenet_metrics_md(metrics: Any) -> str:
             float(g["parse_fail_rate"].mean()) if "parse_fail_rate" in g else None,
         ))
     return md_table(rows, ["dataset", "k", "metric", "mean", "std", "seeds", "parse fail rate"])
+
+
+def chemllmbench_metrics_md(metrics: Any) -> str:
+    """The headline metric of each (task, k, strategy) group.
+
+    ``metrics`` is the long frame from the ChemLLMBench ``evaluate_run``; only
+    the rows flagged ``primary`` are shown, with the parse failure rate.
+
+    >>> import pandas as pd
+    >>> df = pd.DataFrame({"task": ["bbbp"] * 2, "k": [0, 0], "strategy": ["random"] * 2,
+    ...     "metric": ["accuracy", "parse_fail_rate"], "value": [0.5, 0.1],
+    ...     "primary": [True, False], "n": [10, 10]})
+    >>> print(chemllmbench_metrics_md(df))
+    | task | k | strategy | metric | value | n | parse fail rate |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | bbbp | 0 | random | accuracy | 0.5 | 10 | 0.1 |
+    """
+    if metrics is None or metrics.empty:
+        return "_No scored results._"
+    fail = {
+        (r.task, r.k, r.strategy): r.value
+        for r in metrics[metrics["metric"] == "parse_fail_rate"].itertuples()
+    }
+    rows = [
+        (r.task, int(r.k), r.strategy, r.metric, r.value, int(r.n), fail.get((r.task, r.k, r.strategy)))
+        for r in metrics[metrics["primary"]].itertuples()
+    ]
+    return md_table(rows, ["task", "k", "strategy", "metric", "value", "n", "parse fail rate"])
 
 
 def retrosynthesis_metrics_md(summary: dict[str, Any]) -> str:

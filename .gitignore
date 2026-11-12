@@ -10,6 +10,7 @@ venv/
 data/raw/
 data/processed/*
 !data/processed/retrosynthesis/
+!data/processed/chemllmbench/
 outputs/
 
 # AiZynthFinder models (large; see README.md)

@@ -1,0 +1,388 @@
+# Copied from Chemberata4_ChemLLMBench @ a3c6447 (branch my-changes):
+#   Name_Prediction/data.py + Name_Prediction/name_pred.py (lines 32-160)
+# Only data paths and imports changed; see CHEMLLMBENCH.md.
+from chemberta4.tasks.chemllmbench.data import DATA_DIR, fetch_url, box_pickle_path
+
+SMILES_TO_IUPAC = """You are an expert chemist. Given the molecular SMILES, your task is to predict the IUPAC name using your experienced chemical IUPAC name knowledge. \
+Please strictly follow the format, no other information can be provided. Wrap your response in JSON: {"answer": "<your answer>"}.\n
+"""
+
+IUPAC_TO_SMILES = """You are an expert chemist. Given the molecular IUPAC name, your task is to predict the molecular SMILES using your experienced chemical IUPAC name knowledge. \n\
+Please strictly follow the format, no other information can be provided. You should only reply with molecular SMILES string notations to represent the IUPAC name. The SMILES must be valid and chemically reasonable. Wrap your response in JSON: {"answer": "<your answer>"}.\n
+"""
+
+SMILES_TO_FORMULA = """You are an expert chemist. Given the molecular SMILES, your task is to predict the molecular formula using your experienced chemical molecular formula knowledge. \n\
+Please strictly follow the format, no other information can be provided. Wrap your response in JSON: {"answer": "<your answer>"}.\n
+"""
+
+IUPAC_TO_FORMULA = """You are an expert chemist. Given the molecular IUPAC name, your task is to predict the molecular formula using your experienced chemical IUPAC name and molecular formula knowledge. \n\
+Please strictly follow the format, no other information can be provided. You should only reply with the molecular formula that corresponds to the IUPAC name. Wrap your response in JSON: {"answer": "<your answer>"}.\n
+"""
+
+
+
+
+
+
+import pandas as pd
+import random
+import numpy as np
+from rdkit import Chem, DataStructs
+from rdkit.Chem import rdFingerprintGenerator
+from rdkit.Chem.Scaffolds import MurckoScaffold
+from pathlib import Path
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+SEED = 42
+random.seed(SEED)
+
+URL = DATA_DIR / "llm_test.csv"
+
+# Maps each task name to (input_col, output_col)
+TASK_COL_MAP = {
+    "SMILES_TO_IUPAC":   ("smiles", "iupac"),
+    "IUPAC_TO_SMILES":   ("iupac",  "smiles"),
+    "SMILES_TO_FORMULA": ("smiles", "formula"),
+    "IUPAC_TO_FORMULA":  ("iupac",  "formula"),
+}
+
+# System-prompt templates, keyed by task name
+PROMPTS = {
+    "SMILES_TO_IUPAC":   SMILES_TO_IUPAC,
+    "IUPAC_TO_SMILES":   IUPAC_TO_SMILES,
+    "SMILES_TO_FORMULA": SMILES_TO_FORMULA,
+    "IUPAC_TO_FORMULA":  IUPAC_TO_FORMULA,
+}
+
+# Morgan fingerprint generator (used for scaffold sampling)
+_fp_gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+
+# ---------------------------------------------------------------------------
+# Preprocessing
+# ---------------------------------------------------------------------------
+
+def _canonicalise_smiles(df):
+    """Convert all SMILES to canonical form, dropping invalid entries."""
+    df.dropna(subset=["smiles"], inplace=True)
+    df["smiles"] = df["smiles"].apply(Chem.MolFromSmiles)
+    df.dropna(subset=["smiles"], inplace=True)
+    df["smiles"] = df["smiles"].apply(Chem.MolToSmiles)
+
+# ---------------------------------------------------------------------------
+# Example formatting
+# ---------------------------------------------------------------------------
+
+def _format_examples(rows, name):
+    """Return a list of (input_value, output_value) tuples for the given task.
+
+    Each tuple pairs the input column value with its expected output,
+    e.g. (smiles_string, iupac_string) for SMILES_TO_IUPAC.
+    """
+    from_col, to_col = TASK_COL_MAP[name]
+    return list(zip(rows[from_col], rows[to_col]))
+
+# ---------------------------------------------------------------------------
+# Sampling strategies
+# ---------------------------------------------------------------------------
+
+def _random_sample_examples(df, k, name):
+    """Randomly sample *k* training examples for in-context learning."""
+    sampled = df.sample(k, random_state=SEED)
+    return _format_examples(sampled, name)
+
+
+def _scaffold_fingerprint(smiles):
+    """Morgan fingerprint of the Murcko scaffold of a molecule."""
+    mol = Chem.MolFromSmiles(smiles)
+    scaffold = MurckoScaffold.GetScaffoldForMol(mol)
+    return _fp_gen.GetFingerprint(scaffold)
+
+
+def _scaffold_sample_examples(df_train, train_fps, test_smiles, k, name):
+    """Select the *k* training molecules whose scaffolds are most
+    Tanimoto-similar to the test molecule's scaffold.
+
+    ``test_smiles`` is the structure of the test molecule, used ONLY to find
+    neighbours. The examples that are placed in the prompt are formatted with
+    the task's own columns, so for an IUPAC-input task the nearest training
+    molecules are shown as (iupac -> output) pairs.
+
+    This gives each test molecule a *different* set of ICL examples that
+    are structurally relevant.
+    """
+    test_fp = _scaffold_fingerprint(test_smiles)
+    similarities = DataStructs.BulkTanimotoSimilarity(test_fp, train_fps)
+    top_k = np.argsort(similarities)[::-1][:k]
+    return _format_examples(df_train.iloc[top_k], name)
+
+# ---------------------------------------------------------------------------
+# Prompt construction
+# ---------------------------------------------------------------------------
+
+def _build_system_prompt(name, examples):
+    """Combine the base task prompt with formatted ICL examples."""
+    system_prompt = PROMPTS[name]
+    if not examples:
+        return system_prompt
+
+    from_col, to_col = TASK_COL_MAP[name]
+    system_prompt += "\n" + "\n".join(
+        f"{from_col}: {inp}\n{to_col}: {out}"
+        for inp, out in examples
+    )
+    return system_prompt
+
+
+def _create_prompt(sample_strategy, df_train, df_test, name, k):
+    """Build parallel lists of (system_prompts, user_prompts).
+
+    Returns
+    -------
+    system_prompts : list[str]
+        One system prompt per test molecule (identical across test set for
+        zero-shot and random sampling; unique per molecule for scaffold).
+    user_prompts : list[str]
+        One user prompt per test molecule.
+    """
+    from_col, to_col = TASK_COL_MAP[name]
+    test_inputs = df_test[from_col].tolist()
+
+    # User prompt: present the input and ask for the output
+    user_prompts = [f"{from_col}: {inp}\n{to_col}:" for inp in test_inputs]
+
+    # Zero-shot — no examples
+    if k == 0:
+        system_prompt = _build_system_prompt(name, examples=None)
+        return [system_prompt] * len(test_inputs), user_prompts
+
+    # Random — same examples for every test molecule
+    if sample_strategy == "random":
+        system_prompt = _build_system_prompt(
+            name, _random_sample_examples(df_train, k, name)
+        )
+        return [system_prompt] * len(test_inputs), user_prompts
+
+    # Scaffold — examples depend on the test molecule.
+    # Works for every task: when the task input is an IUPAC name, it is
+    # converted to SMILES by taking the SMILES stored on the same CSV row
+    # (df_test["smiles"] is aligned with df_test["iupac"]), the scaffold
+    # neighbours are found with that SMILES, and the neighbours' IUPAC
+    # names (+ their outputs) are what end up in the prompt.
+    if sample_strategy == "scaffold":
+        test_smiles = df_test["smiles"].tolist()
+        train_fps = [_scaffold_fingerprint(s) for s in df_train["smiles"]]
+        system_prompts = [
+            _build_system_prompt(
+                name,
+                _scaffold_sample_examples(df_train, train_fps, s, k, name),
+            )
+            for s in test_smiles
+        ]
+        return system_prompts, user_prompts
+
+    raise ValueError(f"Unknown sample_strategy: {sample_strategy}")
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+def load_dataset(name, sample_strategy="random", k=0):
+    """Load the Name-Prediction dataset and return prompts + test data.
+
+    Parameters
+    ----------
+    name : str
+        Task name — one of the keys in ``TASK_COL_MAP``
+        (``"SMILES_TO_IUPAC"``, ``"IUPAC_TO_SMILES"``,
+        ``"SMILES_TO_FORMULA"``, ``"IUPAC_TO_FORMULA"``).
+    sample_strategy : str, default ``"random"``
+        How to choose ICL examples: ``"random"`` or ``"scaffold"``.
+    k : int, default ``0``
+        Number of in-context examples (0 = zero-shot).
+
+    Returns
+    -------
+    system_prompts : list[str]
+    user_prompts   : list[str]
+    df_test        : pd.DataFrame
+    """
+    if name not in TASK_COL_MAP:
+        raise ValueError(
+            f"Unknown task '{name}'. Choose from {list(TASK_COL_MAP.keys())}"
+        )
+
+    # Load & clean
+    df = pd.read_csv(URL)
+    _canonicalise_smiles(df)
+
+    # Pre-defined train / test split in the CSV
+    df_train = df[df["label"] == "train"].reset_index(drop=True)
+    df_test  = df[df["label"] == "test"].reset_index(drop=True)
+
+    system_prompts, user_prompts = _create_prompt(
+        sample_strategy=sample_strategy,
+        df_train=df_train,
+        df_test=df_test,
+        name=name,
+        k=k,
+    )
+
+    return system_prompts, user_prompts, df_test
+
+
+# ── Runner section (parsing, normalisation, metrics) ────────────────────────
+import re
+from chemberta4.tasks.chemllmbench.data import DATA_DIR, fetch_url, box_pickle_path
+from chemberta4.tasks.chemllmbench.parsing import extract_json_answer, strip_thinking
+from rdkit import RDLogger
+
+RDLogger.DisableLog("rdApp.*")  # silence RDKit parse warnings for invalid SMILES
+
+
+# ── Supported tasks ─────────────────────────────────────────────────────────
+SUPPORTED_TASKS = list(TASK_COL_MAP.keys())
+
+# Column names / order used when reporting accuracy
+TASK_SHORT_NAME = {
+    "SMILES_TO_IUPAC":   "smiles2iupac",
+    "IUPAC_TO_SMILES":   "iupac2smiles",
+    "SMILES_TO_FORMULA": "smiles2formula",
+    "IUPAC_TO_FORMULA":   "iupac2formula",
+}
+REPORT_COLUMNS = list(TASK_SHORT_NAME.values())
+
+_FORMULA_TOKEN = re.compile(r"([A-Z][a-z]?)(\d*)")
+
+
+# ── Helper: parse the generated answer from raw LLM output ──────────────────
+def _parse_prediction(raw_text, task_name):
+    """Extract the predicted value from the raw LLM response.
+
+    The model is prompted to reply in JSON format {"answer": "<value>"}.
+    Falls back to `<col>: <value>` or the first non-empty line.
+
+    Returns an empty string on parse failure.
+    """
+    if not raw_text:
+        return ""
+
+    text = raw_text.strip()
+
+    text = strip_thinking(text)
+    if not text:
+        return ""
+
+    ans = extract_json_answer(text, key="answer")
+
+    if ans:
+        return ans.strip()
+
+    _, to_col = TASK_COL_MAP[task_name]
+
+    # Try structured pattern  "<to_col>: <answer>"
+    pattern = re.compile(
+        rf"{re.escape(to_col)}\s*:\s*(.+)", re.IGNORECASE
+    )
+    match = pattern.search(text)
+    if match:
+        return match.group(1).strip()
+
+    # Fallback: return the first non-empty line
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            return line
+
+    return ""
+
+
+# ── Normalisers (one per target type) ───────────────────────────────────────
+def _canonical(s):
+    """Canonical SMILES, or "" if empty/invalid."""
+    if not s:
+        return ""
+    mol = Chem.MolFromSmiles(s)
+    return Chem.MolToSmiles(mol) if mol is not None else ""
+
+
+def _formula_key(s):
+    """Order-independent key for a molecular formula, e.g. 'H6C2O' == 'C2H6O'.
+
+    Case-sensitive on purpose: 'CO' (carbon monoxide) is not 'Co' (cobalt).
+    Falls back to the whitespace-stripped string if it can't be parsed
+    (parentheses, charges, etc.).
+    """
+    s = re.sub(r"\s+", "", s)
+    if not s:
+        return ""
+    tokens = _FORMULA_TOKEN.findall(s)
+    if "".join(el + n for el, n in tokens) != s:
+        return s
+    counts = {}
+    for el, n in tokens:
+        counts[el] = counts.get(el, 0) + (int(n) if n else 1)
+    return ",".join(f"{el}{c}" for el, c in sorted(counts.items()))
+
+
+def _iupac_key(s):
+    """Lower-cased, whitespace-collapsed IUPAC name."""
+    return re.sub(r"\s+", " ", s.strip().lower())
+
+
+def _normaliser_for(to_col):
+    return {"smiles": _canonical, "formula": _formula_key, "iupac": _iupac_key}[to_col]
+
+
+# ── Helper: compute metrics (accuracy only) ─────────────────────────────────
+def _compute_metrics(y_true, y_pred, task_name):
+    """Accuracy: fraction of predictions equal to the reference after
+    normalisation. Empty or invalid predictions never count as correct."""
+    _, to_col = TASK_COL_MAP[task_name]
+    norm = _normaliser_for(to_col)
+
+    correct = 0
+    for gt, pred in zip(y_true, y_pred):
+        p = norm(str(pred).strip())
+        t = norm(str(gt).strip())
+        if p and p == t:
+            correct += 1
+
+    total = len(y_true)
+    return {
+        "task": TASK_SHORT_NAME[task_name],
+        "accuracy": correct / total if total else 0.0,
+        "correct": correct,
+        "total": total,
+    }
+
+
+def format_accuracy_row(results):
+    """results: {short_task_name: accuracy}. Returns (header_line, value_line)."""
+    header = "  ".join(f"{c:>14}" for c in REPORT_COLUMNS)
+    values = "  ".join(
+        f"{results[c]:>14.4f}" if c in results else f"{'-':>14}" for c in REPORT_COLUMNS
+    )
+    return header, values
+
+
+# ── chemberta4 adapter (not in the reference) ───────────────────────────────
+# What run.py calls: the prompts and references exactly as the reference
+# run_benchmark built them, its parser, and its metrics.
+SUBTASKS = SUPPORTED_TASKS
+
+
+def load(subtask, strategy, k):
+    """(system_prompts, user_prompts, y_true) for one task."""
+    system_prompts, user_prompts, df_test = load_dataset(name=subtask, sample_strategy=strategy, k=k)
+    _, to_col = TASK_COL_MAP[subtask]
+    return system_prompts, user_prompts, df_test[to_col].astype(str).tolist()
+
+
+def parse(raw, subtask):
+    return _parse_prediction(raw, subtask)
+
+
+def score(y_true, y_pred, subtask):
+    return _compute_metrics(y_true, y_pred, subtask)
