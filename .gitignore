@@ -5,7 +5,7 @@ venv/
 *.egg-info/
 .pytest_cache/
 .DS_Store
-
+.cursor
 # datasets and run output
 data/raw/
 data/processed/*

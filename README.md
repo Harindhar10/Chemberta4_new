@@ -323,7 +323,7 @@ python scripts/evaluate.py --task moleculenet \
 export HF_TOKEN=hf_...          # a write token
 
 python scripts/evaluate.py --task moleculenet --model hosted_vllm/Qwen/Qwen3-8B \
-    --shots 0,5 --limit 50 --hf-repo Harindhar10/chemberta4-evals
+    --shots 0,5 --limit 50 --hf-repo harindhar10/chemberta4-evals
 ```
 
 `--hf-repo` pushes the finished run to a **public** dataset repo, created on first use. All
@@ -338,7 +338,7 @@ runs share that one repo:
 
 ```python
 from datasets import load_dataset
-ds = load_dataset("Harindhar10/chemberta4-evals", "moleculenet--Qwen3-8B")
+ds = load_dataset("harindhar10/chemberta4-evals", "moleculenet--Qwen3-8B")
 ```
 
 Good to know:
