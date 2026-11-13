@@ -68,19 +68,12 @@ def done_keys(records: list[dict[str, Any]]) -> set[tuple[str, int, int, int]]:
     seeds existed still match: they count as seed 0. API failures are excluded,
     which is what lets a re-run retry them.
     """
-    keys = set()
-    for rec in records:
-        if rec.get("status") == "api_error":
-            continue
-        keys.add(
-            (
-                rec["dataset"],
-                int(rec["k"]),
-                int(rec.get("seed") or 0),
-                int(rec["row"]),
-            )
-        )
-    return keys
+    return {record_key(rec) for rec in records if rec.get("status") != "api_error"}
+
+
+def record_key(rec: dict[str, Any]) -> tuple[str, int, int, int]:
+    """The :func:`resume_key` of a stored record; a missing seed counts as 0."""
+    return rec["dataset"], int(rec["k"]), int(rec.get("seed") or 0), int(rec["row"])
 
 
 def generate_one(

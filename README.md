@@ -185,6 +185,7 @@ Each run writes to `outputs/<task>/<run>/`:
 | File | Contents |
 | --- | --- |
 | `results.jsonl` / `generations.jsonl` | Every raw model answer. This is the checkpoint. |
+| `tasks/<group>.jsonl` | The same records, one file per finished group: ChemLLMBench `<subtask>_k<k>_<strategy>`, MoleculeNet `<dataset>_k<k>_seed<seed>`, retrosynthesis `mols_00000-00099` (100 molecules each). Each file is written as soon as its group's last answer lands. |
 | `results.csv` | Per-molecule results as a table. |
 | `predictions/` | ChemLLMBench: one CSV of raw answers and parsed predictions per task, k and strategy. |
 | `metrics.csv` / `summary.json` | The final scores. |
@@ -222,6 +223,11 @@ Run `python scripts/evaluate.py --help` for every option.
 - **Re-scoring is free.** Scoring reads the checkpoint, so re-running a finished command
   re-scores without sending any request. Use this to apply a metric change to results you
   already have.
+- **Finished groups are saved as their own files.** When the last item of a group is
+  saved, its records are also written to `tasks/<group>.jsonl`. A group with a failed
+  request is written after a re-run retries that request. A restarted run also writes
+  any group the checkpoint already completes. The checkpoint stays what resume and
+  scoring read.
 
 ### Thinking models
 

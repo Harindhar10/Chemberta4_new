@@ -95,3 +95,96 @@ def test_pending_filters_by_key() -> None:
     items = [("bbbp", 0), ("bbbp", 5), ("hiv", 0)]
     done = {("bbbp", 0)}
     assert pending(items, done, key=lambda item: item) == [("bbbp", 5), ("hiv", 0)]
+
+
+# --------------------------------------------------------------------------
+# Group files: tasks/<group>.jsonl written as each group finishes
+# --------------------------------------------------------------------------
+from chemberta4.evaluation.runner import GroupWriter, write_group  # noqa: E402
+
+
+def _writer(tmp_path, items):
+    return GroupWriter.from_items(
+        tmp_path / "out.jsonl",
+        tmp_path / "tasks",
+        items,
+        group_of=lambda n: "even" if n % 2 == 0 else "odd",
+        item_key=lambda n: n,
+        key_of=lambda rec: rec["id"],
+    )
+
+
+def test_group_file_is_written_once_its_last_record_is_flushed(tmp_path) -> None:
+    items = [1, 2, 3, 4, 5]
+    writer = _writer(tmp_path, items)
+    seen: list[tuple[str, list[int]]] = []
+
+    def on_done(group: str) -> None:
+        path = writer(group)
+        seen.append((group, sorted(r["id"] for r in load_jsonl(path))))
+
+    generate(
+        items=items,
+        worker=lambda n: {"id": n, "status": "ok"},
+        out_path=tmp_path / "out.jsonl",
+        workers=3,
+        progress_every=0,
+        group_of=lambda n: "even" if n % 2 == 0 else "odd",
+        on_group_done=on_done,
+    )
+    assert sorted(seen) == [("even", [2, 4]), ("odd", [1, 3, 5])]
+
+
+def test_group_with_a_dropped_record_is_not_written(tmp_path) -> None:
+    items = [1, 2, 3, 4]
+    writer = _writer(tmp_path, items)
+    generate(
+        items=items,
+        worker=lambda n: {"id": n, "status": "api_error" if n == 3 else "ok"},
+        out_path=tmp_path / "out.jsonl",
+        workers=2,
+        keep=lambda rec: rec["status"] != "api_error",
+        progress_every=0,
+        group_of=lambda n: "even" if n % 2 == 0 else "odd",
+        on_group_done=writer,
+    )
+    assert (tmp_path / "tasks" / "even.jsonl").exists()
+    assert not (tmp_path / "tasks" / "odd.jsonl").exists()
+
+
+def test_group_counts_records_from_an_earlier_run(tmp_path) -> None:
+    (tmp_path / "out.jsonl").write_text('{"id": 1, "status": "ok"}\n')
+    writer = _writer(tmp_path, [1, 3])
+    assert writer.write_complete() == []  # 3 is still missing
+    generate(
+        items=[3],
+        worker=lambda n: {"id": n, "status": "ok"},
+        out_path=tmp_path / "out.jsonl",
+        progress_every=0,
+        group_of=lambda n: "odd",
+        on_group_done=writer,
+    )
+    assert [r["id"] for r in load_jsonl(tmp_path / "tasks" / "odd.jsonl")] == [1, 3]
+
+
+def test_write_group_keeps_only_its_keys_and_the_last_duplicate(tmp_path) -> None:
+    records = [
+        {"id": 1, "v": "old"},
+        {"id": 2, "v": "other group"},
+        {"id": 1, "v": "new"},
+        {"id": 9, "status": "api_error"},
+    ]
+    path = write_group(tmp_path, "g", records, {1}, key_of=lambda r: r["id"])
+    assert load_jsonl(path) == [{"id": 1, "v": "new"}]
+    assert not list(tmp_path.glob("*.tmp")), "the temporary file must be renamed away"
+
+
+def test_generate_without_groups_is_unchanged(tmp_path) -> None:
+    counts = generate(
+        items=[1, 2],
+        worker=lambda n: {"id": n, "status": "ok"},
+        out_path=tmp_path / "out.jsonl",
+        progress_every=0,
+        on_group_done=lambda g: (_ for _ in ()).throw(AssertionError("called")),
+    )
+    assert counts["ok"] == 2

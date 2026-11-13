@@ -85,6 +85,38 @@ def run_config(args: Namespace, run_dir: Path, **task_fields: Any) -> dict[str, 
     return config
 
 
+#: Molecules per retrosynthesis group file, by ``mol_no``.
+RETRO_GROUP_SIZE = 100
+
+
+def group_files(
+    run_dir: Path,
+    items: list[Any],
+    *,
+    group_of: Any,
+    item_key: Any,
+    key_of: Any,
+    checkpoint: Path | None = None,
+) -> runner.GroupWriter:
+    """The writer of this run's ``tasks/<group>.jsonl`` files.
+
+    Every item of the run, done or not, defines what a group must contain.
+    Groups the checkpoint already completes are written straight away, so a
+    restarted run (or one that predates group files) has them too.
+    """
+    writer = runner.GroupWriter.from_items(
+        checkpoint or run_dir / "results.jsonl",
+        run_dir / "tasks",
+        items,
+        group_of=group_of,
+        item_key=item_key,
+        key_of=key_of,
+    )
+    written = writer.write_complete()
+    print(f"group files : {len(written)}/{len(writer.expected)} complete in {run_dir / 'tasks'}")
+    return writer
+
+
 def hub_setup(args: Namespace) -> str | None:
     """The HF token when ``--hf-repo`` is set, checked before any generation."""
     if not getattr(args, "hf_repo", None):
@@ -134,11 +166,21 @@ def run_moleculenet(args: Namespace) -> None:
     announce(args, run_dir, len(requests))
     print(f"{len(done)} already done, generating {len(todo)}")
 
+    def group_of(request: Any) -> str:
+        dataset, k, seed = request[0], request[1], request[2]
+        return f"{dataset}_k{k}_seed{seed}"
+
+    groups = group_files(
+        run_dir, requests, group_of=group_of, item_key=task.resume_key, key_of=task.record_key
+    )
+
     backend = make_backend(args, temperature=0.0)
     perf_data = None
     with perf_mod.perf_window(args.perf) as perf:
         counts = runner.generate(
             items=todo,
+            group_of=group_of,
+            on_group_done=groups,
             worker=lambda request: task.generate_one(
                 backend,
                 request,
@@ -229,11 +271,20 @@ def run_chemllmbench(args: Namespace) -> None:
     print(f"shots       : {shots}   strategy: {args.strategy}")
     print(f"{len(requests) - len(todo)} already done, generating {len(todo)}")
 
+    def group_of(request: Any) -> str:
+        return f"{request.task}_k{request.k}_{request.strategy}"
+
+    groups = group_files(
+        run_dir, requests, group_of=group_of, item_key=task.resume_key, key_of=task.record_key
+    )
+
     backend = make_backend(args, temperature=0.0)
     perf_data = None
     with perf_mod.perf_window(args.perf) as perf:
         counts = runner.generate(
             items=todo,
+            group_of=group_of,
+            on_group_done=groups,
             worker=lambda request: task.generate_one(
                 backend,
                 request,
@@ -394,9 +445,27 @@ def run_retrosynthesis(args: Namespace) -> None:
         print(f"checks      : stability={args.stability_check} hallucination={args.hallucination_check}")
     print(f"{len(done)} already done, generating {len(todo)}")
 
+    def group_of(item: tuple[int, Any]) -> str:
+        start = item[0] // RETRO_GROUP_SIZE * RETRO_GROUP_SIZE
+        return f"mols_{start:05d}-{start + RETRO_GROUP_SIZE - 1:05d}"
+
+    # This run's molecules: what is already stored plus what it will generate.
+    # With --limit, the last group can be smaller than RETRO_GROUP_SIZE.
+    in_run = [(i, row) for i, row in rows if i in done] + todo
+    groups = group_files(
+        run_dir,
+        in_run,
+        checkpoint=jsonl,
+        group_of=group_of,
+        item_key=lambda item: item[0],
+        key_of=lambda rec: rec["mol_no"],
+    )
+
     with perf_mod.perf_window(args.perf) as perf:
         counts = runner.generate(
             items=todo,
+            group_of=group_of,
+            on_group_done=groups,
             worker=lambda item: task.generate_one(
                 item[1],
                 item[0],
