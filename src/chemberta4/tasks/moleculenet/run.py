@@ -133,6 +133,7 @@ def generate_one(
         "seed": seed,
         "row": row,
         "custom_id": custom_id,
+        "messages": messages,
         "text": response.text,
         "reasoning": response.reasoning,
         "predictions": predictions,

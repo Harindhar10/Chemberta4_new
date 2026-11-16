@@ -177,6 +177,7 @@ def generate_one(
         "strategy": request.strategy,
         "row": request.row,
         "custom_id": request.custom_id,
+        "messages": messages,
         "text": response.text,
         "reasoning": response.reasoning,
         "prediction": prediction,

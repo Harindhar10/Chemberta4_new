@@ -104,7 +104,7 @@ def generate_one(
         reorder and drop, so ``explanations`` and ``confidence`` do not line up with
         ``proposals``.
     """
-    from chemberta4.deepretro.llm import call_LLM, llm_pipeline
+    from chemberta4.deepretro.llm import build_messages, call_LLM, llm_pipeline
 
     smiles = row["input"]
     messages = prompt_messages(prompt, smiles)
@@ -117,6 +117,8 @@ def generate_one(
         "prompt": prompt,
         "input": smiles,
         "output": row["output"],
+        # The prompt as sent: ``messages`` if given, else DeepRetro's default pair.
+        "messages": build_messages(smiles, model, messages=messages),
     }
 
     if mode == "raw":
@@ -144,6 +146,7 @@ def generate_one(
         # keeps ``input`` as given, so scoring and the dataset join do not change.
         target = canonicalize(smiles.strip())
         messages = prompt_messages(prompt, target)
+        record["messages"] = build_messages(target, model, messages=messages)
         # AutoSolver keeps the hallucination gate out of the retry loop: a rejection
         # there cannot trigger another attempt. So the loop gets validity and
         # stability only, and the gate runs once on what comes back.
