@@ -90,6 +90,47 @@ def test_property_score_counts_parse_failures_as_wrong() -> None:
     assert metrics["invalid_predictions"] == 1
 
 
+# --------------------------------------------------------------------------
+# Deliberate property-prediction fixes (not in the reference)
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ('{"answer": "<Yes/No>"}', -1),  # echoed template
+        ('{"answer": "Yes"}', 1),
+        ('{"answer": "No"}', 0),
+        ("Please answer Yes or No.\nPenetration: No", 0),
+        ("I must answer with Yes/No. No.", 0),
+    ],
+)
+def test_property_parser_ignores_echoed_choices(text: str, expected: int) -> None:
+    from chemberta4.tasks.chemllmbench import property_prediction as pp
+
+    assert pp.parse(text, "BBBP") == expected
+
+
+@pytest.mark.parametrize("name, k", [("BBBP", 5), ("BBBP", 4), ("HIV", 3), ("HIV", 5)])
+def test_random_sampling_returns_exactly_k_examples(name: str, k: int) -> None:
+    from chemberta4.tasks.chemllmbench import property_prediction as pp
+
+    label_col = pp.LABEL_COL_MAP[name]
+    df = pd.DataFrame({"smiles": ["C" * (i + 1) for i in range(20)], label_col: [0, 1] * 10})
+    assert len(pp._random_sample_examples(df, k, name)) == k
+
+
+def test_clintox_prompts_do_not_show_fda_status() -> None:
+    from chemberta4.tasks.chemllmbench import property_prediction as pp
+
+    df = pd.DataFrame({
+        "smiles": ["CCO", "CCN", "CCC", "CCCl"],
+        "FDA_APPROVED": [1, 0, 1, 0],
+        "CT_TOX": [0, 1, 0, 1],
+    })
+    system, user = pp._create_prompt("random", df.iloc[:2], df.iloc[2:], "ClinTox", 2)
+    assert not any("FDA" in s for s in system + user)
+    assert user[0] == "SMILES: CCC\nClinically-trail-toxic:"
+
+
 def test_reaction_score_reports_invalid_smiles() -> None:
     from chemberta4.tasks.chemllmbench import reaction_prediction as rp
 

@@ -59,6 +59,23 @@ Only these edits, each applied by exact string replacement:
      into `data/raw/chemllmbench/`.
    - The USPTO Box pickles are saved there too, instead of in the current
      directory.
+3. **Deliberate fixes in `property_prediction.py`.** These change the
+   reference behaviour, so ClinTox scores and odd-k random-sampling scores no
+   longer match the reference leaderboard.
+   - **ClinTox no longer shows `FDA-approved: Yes/No`**, either in the
+     examples or for the test molecule, and the sentence about it was removed
+     from the system prompt. In the DeepChem data FDA_APPROVED almost
+     determines CT_TOX: every FDA=0 row is CT_TOX=1, and 1372 of 1390 FDA=1
+     rows are CT_TOX=0. A model could reach ~99% accuracy by copying it.
+   - **Echoed choices are ignored when parsing.** `Yes/No`, `<Yes/No>` and
+     `Yes or No` are removed before searching for an answer. A JSON answer
+     that is only the template (`{"answer": "<Yes/No>"}`) is a parse failure.
+     The reference scored it as Yes.
+   - **Random sampling returns exactly k examples.** The negatives are
+     `k - n_pos`, with `n_pos = k // 2`, or `int(0.2 * k)` for HIV. The
+     reference took `int(k/2)` twice, so k=5 gave 4 examples, and HIV took
+     `int(0.2k) + int(0.8k)`, so k=3 gave 2. The result is unchanged for even
+     k, and for HIV whenever 0.2k is a whole number.
 
 Each module also ends with a short **adapter** that is not in the reference:
 `load(subtask, strategy, k)`, `parse(raw, subtask)` and

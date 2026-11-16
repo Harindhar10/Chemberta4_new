@@ -1,6 +1,9 @@
 # Copied from Chemberata4_ChemLLMBench @ a3c6447 (branch my-changes):
 #   Property_Prediction/data.py + Property_Prediction/Property_prediction.py (lines 43-114)
-# Only data paths and imports changed; see CHEMLLMBENCH.md.
+# Data paths and imports changed, plus three deliberate fixes that differ from
+# the reference (see CHEMLLMBENCH.md): ClinTox prompts no longer show the
+# FDA-approved status (it leaks CT_TOX), echoed "Yes/No" templates no longer
+# parse as Yes, and random sampling returns exactly k examples for odd k.
 from chemberta4.tasks.chemllmbench.data import DATA_DIR, fetch_url, box_pickle_path
 
 BBBP_prompt = "You are an expert chemist, your task is to predict the property of molecule using your experienced chemical property prediction knowledge. \nPlease strictly follow the format, no other information can be provided. Given the SMILES string of a molecule, the task focuses on predicting molecular properties, specifically penetration/non-penetration to the brain-blood barrier, based on the SMILES string representation of each molecule. You will be provided with several examples molecules, each accompanied by a binary label indicating whether it has penetrative property (Yes) or not (No). The task is to predict the binary label for a given molecule, please answer with only Yes or No. Wrap your response in JSON: {\"answer\": \"<Yes/No>\"}.\n"
@@ -15,7 +18,7 @@ Please strictly follow the format, no other information can be provided. Given t
 HIV_prompt = "You are an expert chemist, your task is to predict the property of molecule using your experienced chemical property prediction knowledge. Please strictly follow the format, no other information can be provided. Given the SMILES string of a molecule, the task focuses on predicting molecular properties, specifically inhibit of HIV replication based on the SMILES string representation of each molecule. You will be provided with several examples molecules, each accompanied by a binary label indicating whether a molecule can inhibit (Yes) or cannot inhibit (No) HIV replication. The task is to precisely predict the binary label for a given molecule, considering its properties and its potential to impede HIV replication, please answer with only Yes or No. Wrap your response in JSON: {\"answer\": \"<Yes/No>\"}.\n"
 
 ClinTox_prompt = "You are an expert chemist, your task is to predict the property of molecule using your experienced chemical property prediction knowledge.\n\
-Please strictly follow the format, no other information can be provided. Given the SMILES string of a molecule, the task focuses on predicting molecular properties, specifically wether a molecule is Clinically-trail-Toxic(Yes) or Not Clinically-trail-toxic (No) based on the SMILES string representation of each molecule.. The FDA-approved status will specify if the drug is approved by the FDA for clinical trials(Yes) or Not approved by the FDA for clinical trials(No). You will be provided with task template. The task is to predict the binary label for a given molecule, please answer with only Yes or No. Wrap your response in JSON: {\"answer\": \"<Yes/No>\"}.\n"
+Please strictly follow the format, no other information can be provided. Given the SMILES string of a molecule, the task focuses on predicting molecular properties, specifically wether a molecule is Clinically-trail-Toxic(Yes) or Not Clinically-trail-toxic (No) based on the SMILES string representation of each molecule. You will be provided with task template. The task is to predict the binary label for a given molecule, please answer with only Yes or No. Wrap your response in JSON: {\"answer\": \"<Yes/No>\"}.\n"
 
 
 
@@ -112,30 +115,24 @@ def _filter_smiles(df):
 
 
 def _format_examples(rows, name):
-    """Turn df rows into a list of example tuples.
-    - ClinTox: (smiles, label, fda_label)
-    - Others:  (smiles, label)
+    """Turn df rows into a list of (smiles, label) tuples.
     HIV's activity class (CI/CM/CA) is deliberately left out: it defines HIV_active.
+    ClinTox's FDA_APPROVED is left out too: it almost determines CT_TOX
+    (FDA=0 -> CT_TOX=1 always; FDA=1 -> CT_TOX=0 in ~99% of rows).
     """
     label_col = LABEL_COL_MAP[name]
     labels = ["Yes" if c == 1 else "No" for c in rows[label_col]]
-
-    if name == "ClinTox":
-        fda_labels = ["Yes" if c == 1 else "No" for c in rows["FDA_APPROVED"]]
-        return list(zip(rows["smiles"], labels, fda_labels))
-    else:
-        return list(zip(rows["smiles"], labels))
+    return list(zip(rows["smiles"], labels))
 
 
 def _random_sample_examples(df, k, name):
-    """k/2 positive + k/2 negative random examples (same for every test molecule)."""
+    """k random examples, half positive (20% for HIV), the same for every test molecule.
+    The negatives make up the remainder, so the total is exactly k."""
     label_col = LABEL_COL_MAP[name]
-    positive_examples = df[df[label_col] == 1].sample(int(k/2), random_state=SEED)
-    negative_examples = df[df[label_col] == 0].sample(int(k/2), random_state=SEED)
-
-    if name.lower() == "hiv":
-        positive_examples = df[df[label_col] == 1].sample(int(0.2*k), random_state=SEED)
-        negative_examples = df[df[label_col] == 0].sample(int(0.8*k), random_state=SEED)
+    n_pos = int(0.2 * k) if name.lower() == "hiv" else k // 2
+    n_neg = k - n_pos
+    positive_examples = df[df[label_col] == 1].sample(n_pos, random_state=SEED)
+    negative_examples = df[df[label_col] == 0].sample(n_neg, random_state=SEED)
 
     return _format_examples(pd.concat([positive_examples, negative_examples]), name)
 
@@ -161,16 +158,10 @@ def _build_system_prompt(name, examples):
     if not examples:
         return system_prompt
 
-    if name == "ClinTox":
-        system_prompt += "\n" + "\n".join(
-            f"SMILES: {smiles}\nFDA-approved: {fda}\n{TASK_DESCRIPTION[name]}: {label}"
-            for smiles, label, fda in examples
-        )
-    else:
-        system_prompt += "\n" + "\n".join(
-            f"SMILES: {smiles}\n{TASK_DESCRIPTION[name]}: {label}"
-            for smiles, label in examples
-        )
+    system_prompt += "\n" + "\n".join(
+        f"SMILES: {smiles}\n{TASK_DESCRIPTION[name]}: {label}"
+        for smiles, label in examples
+    )
     return system_prompt
 
 
@@ -178,15 +169,7 @@ def _create_prompt(sample_strategy, df_train, df_test, name, k):
     """Returns (system_prompts, user_prompts), one entry per test molecule."""
     test_smiles = df_test["smiles"].tolist()
 
-    # Build dataset-specific user prompts
-    if name == "ClinTox":
-        fda_labels = ["Yes" if c == 1 else "No" for c in df_test["FDA_APPROVED"]]
-        user_prompts = [
-            f"SMILES: {s}\nFDA-approved: {fda}\n{TASK_DESCRIPTION[name]}:"
-            for s, fda in zip(test_smiles, fda_labels)
-        ]
-    else:
-        user_prompts = [f"SMILES: {s}\n{TASK_DESCRIPTION[name]}:" for s in test_smiles]
+    user_prompts = [f"SMILES: {s}\n{TASK_DESCRIPTION[name]}:" for s in test_smiles]
 
     # zero-shot: base prompt only
     if k == 0:
@@ -241,6 +224,11 @@ from sklearn.metrics import accuracy_score, f1_score
 # ── Supported datasets ──────────────────────────────────────────────────────
 SUPPORTED_DATASETS = ["BBBP", "BACE", "Tox21", "HIV", "ClinTox"]
 
+# "Yes/No", "<Yes/No>", "Yes or No": the answer template or instruction echoed
+# back, not an answer. Removed before any Yes/No search.
+_CHOICE_PHRASE = re.compile(r"\byes\s*(?:/|or)\s*no\b", re.IGNORECASE)
+
+
 def _parse_prediction(raw_text, dataset_name):
     """Extract the first Yes/No answer relevant to the target task.
     Returns 1 (Yes), 0 (No), or -1 (parse failure)."""
@@ -252,11 +240,15 @@ def _parse_prediction(raw_text, dataset_name):
     if not text:
         return -1
     ans = extract_json_answer(text)
+    text = _CHOICE_PHRASE.sub(" ", text)
 
     if ans is not None:
-        m = re.search(r"\b(yes|no)\b", ans.lower())
+        cleaned = _CHOICE_PHRASE.sub(" ", ans)
+        m = re.search(r"\b(yes|no)\b", cleaned.lower())
         if m:
             return 1 if m.group(1) == "yes" else 0
+        if cleaned != ans:
+            return -1  # the JSON answer was only the echoed template
 
     task_key = TASK_DESCRIPTION[dataset_name]
 
