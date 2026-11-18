@@ -20,26 +20,61 @@ from typing import Any
 import pandas as pd
 
 from chemberta4.evaluation import perf as perf_mod
-from chemberta4.evaluation import hub, reporting, runner
+from chemberta4.evaluation import batch, hub, pricing, reporting, runner
+from chemberta4.evaluation.backends.base import ModelBackend
+from chemberta4.evaluation.backends.closed import make_closed_backend, provider_of
 from chemberta4.evaluation.backends.vllm_server import VLLMServerBackend, api_base
 
 
-def make_backend(args: Namespace, *, temperature: float = 0.0) -> VLLMServerBackend:
-    """A backend configured from the parsed arguments."""
+def is_closed(args: Namespace) -> bool:
+    """Whether the model is Claude or GPT rather than a vLLM-served model."""
+    return provider_of(args.model) is not None
+
+
+def make_backend(args: Namespace, *, temperature: float = 0.0) -> ModelBackend:
+    """A backend configured from the parsed arguments.
+
+    ``temperature`` is the task's default for a vLLM model; ``--temperature``
+    overrides it. A closed model gets ``--temperature`` only, and none when it
+    is unset, since current Claude and GPT reasoning models reject one.
+    """
+    if is_closed(args):
+        try:
+            return make_closed_backend(
+                args.model,
+                temperature=args.temperature,
+                max_output_tokens=args.max_output_tokens,
+                enable_thinking=args.thinking,
+                thinking_effort=args.thinking_effort,
+                batch=not args.realtime,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc))
     return VLLMServerBackend(
         args.model,
-        temperature=temperature,
+        temperature=temperature if args.temperature is None else args.temperature,
         max_output_tokens=args.max_output_tokens,
         enable_thinking=args.thinking,
         thinking_effort=args.thinking_effort,
     )
 
 
+def temperature_used(args: Namespace, default: Any) -> Any:
+    """The temperature a run sent, for ``run_config.json``."""
+    if args.temperature is not None:
+        return args.temperature
+    return "provider default" if is_closed(args) else default
+
+
 def announce(args: Namespace, run_dir: Path, n_total: int) -> None:
     """Print what this run is about to do, before it spends any GPU time."""
     print(f"task        : {args.task}")
     print(f"model       : {args.model}")
-    print(f"server      : {api_base()}")
+    if is_closed(args):
+        print(f"provider    : {provider_of(args.model)} "
+              f"({'real time' if args.realtime else 'Batch API'})")
+    else:
+        print(f"server      : {api_base()}")
     print(f"thinking    : {args.thinking}" + (f" ({args.thinking_effort})" if args.thinking else ""))
     print(f"max tokens  : {args.max_output_tokens}")
     print(f"workers     : {args.workers}")
@@ -129,6 +164,106 @@ def hub_setup(args: Namespace) -> str | None:
     return token
 
 
+def confirm_cost(args: Namespace, backend: Any, to_send: list[Any], messages_of: Any) -> None:
+    """Print a cost upper bound for ``to_send`` and ask before spending it.
+
+    ``--max-cost`` refuses a run whose estimate is above it; ``--yes`` skips
+    the question. With no price known for the model, ``--max-cost`` refuses
+    rather than guess.
+    """
+    if not to_send:
+        return
+    chars = sum(len(json.dumps(messages_of(item))) for item in to_send)
+    est = pricing.estimate(
+        backend.prices, chars, len(to_send), args.max_output_tokens, batch=backend.batch
+    )
+    if est is None:
+        print(f"cost        : unknown ({args.model} is not in litellm's price list)")
+        if args.max_cost is not None:
+            raise SystemExit("--max-cost is set but no price is known for this model")
+    else:
+        print(f"cost        : at most ~${sum(est):.2f} for {len(to_send)} requests "
+              f"(input ~${est[0]:.2f} before caching, output ≤${est[1]:.2f} "
+              f"if every answer hits {args.max_output_tokens} tokens)")
+        if args.max_cost is not None and sum(est) > args.max_cost:
+            raise SystemExit(f"estimate is above --max-cost {args.max_cost}; not sending")
+    if args.yes:
+        return
+    try:
+        answer = input("send? [y/N] ")
+    except EOFError:  # no terminal, e.g. under nohup: pass --yes there
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        raise SystemExit("not sent (pass --yes to skip this question)")
+
+
+def generate_items(
+    args: Namespace,
+    backend: Any,
+    run_dir: Path,
+    *,
+    items: list[Any],
+    messages_of: Any,
+    metadata_of: Any,
+    finish: Any,
+    custom_id: Any,
+    out_path: Path,
+    keep: Any,
+    status_of: Any,
+    group_of: Any,
+    on_group_done: Any,
+) -> Any:
+    """Generate ``items``: concurrently in real time, or through the Batch API.
+
+    ``finish(item, messages, response)`` builds the record in every mode, so a
+    batch run stores exactly what a real-time run would.
+    """
+    def worker(item: Any) -> dict[str, Any]:
+        messages = messages_of(item)
+        return finish(item, messages, backend.generate(messages, metadata=metadata_of(item)))
+
+    common = dict(
+        out_path=out_path, keep=keep, status_of=status_of,
+        group_of=group_of, on_group_done=on_group_done,
+    )
+    if not is_closed(args) or not backend.batch:
+        if is_closed(args):
+            confirm_cost(args, backend, items, messages_of)
+        return runner.generate(items=items, worker=worker, workers=args.workers, **common)
+
+    manifest = run_dir / "batches.json"
+    in_flight = {
+        cid for b in batch.load_manifest(manifest) if not b["collected"] for cid in b["custom_ids"]
+    }
+    to_send = [i for i in items if batch.batch_id_safe(custom_id(i)) not in in_flight]
+    confirm_cost(args, backend, to_send, messages_of)
+    return batch.run_batch(
+        items=items,
+        backend=backend,
+        custom_id=custom_id,
+        messages_of=messages_of,
+        finish=finish,
+        manifest_path=manifest,
+        wait=not args.no_wait,
+        **common,
+    )
+
+
+def print_cost_summary(checkpoint: Path) -> None:
+    """Total cost and prompt-cache hit rate over a closed-model run's records."""
+    records = [r for r in runner.load_jsonl(checkpoint) if "cache_read_tokens" in r]
+    if not records:
+        return
+    read = sum(r.get("cache_read_tokens") or 0 for r in records)
+    prompt = read + sum(
+        (r.get("input_tokens") or 0) + (r.get("cache_write_tokens") or 0) for r in records
+    )
+    costs = [r["cost_usd"] for r in records if r.get("cost_usd") is not None]
+    print(f"\ncost        : ${sum(costs):.2f} over {len(costs)}/{len(records)} priced records")
+    if prompt:
+        print(f"cache hits  : {read / prompt:.0%} of prompt tokens read from cache")
+
+
 # --------------------------------------------------------------------------
 # MoleculeNet
 # --------------------------------------------------------------------------
@@ -177,20 +312,26 @@ def run_moleculenet(args: Namespace) -> None:
     backend = make_backend(args, temperature=0.0)
     perf_data = None
     with perf_mod.perf_window(args.perf) as perf:
-        counts = runner.generate(
+        counts = generate_items(
+            args,
+            backend,
+            run_dir,
             items=todo,
             group_of=group_of,
             on_group_done=groups,
-            worker=lambda request: task.generate_one(
+            messages_of=lambda request: task.request_messages(request, args.split),
+            metadata_of=lambda request: task.request_metadata(request, run_id),
+            finish=lambda request, messages, response: task.make_record(
                 backend,
                 request,
+                messages,
+                response,
                 run_id=run_id,
-                split=args.split,
                 thinking=args.thinking,
                 thinking_effort=args.thinking_effort,
             ),
+            custom_id=lambda request: request[4],
             out_path=run_dir / "results.jsonl",
-            workers=args.workers,
             # An API failure is not stored, so the next run retries it. A parse
             # failure is stored: the model answered, and that is a result.
             keep=lambda rec: rec["status"] != "api_error",
@@ -199,6 +340,10 @@ def run_moleculenet(args: Namespace) -> None:
         if perf is not None and todo:
             completed = sum(v for k, v in counts.items() if k != "dropped")
             perf_data = (perf_mod.write_perf(perf, run_dir, completed), perf.samples)
+    if counts.get("pending"):
+        return  # --no-wait: scored once the batches are collected
+    if is_closed(args):
+        print_cost_summary(run_dir / "results.jsonl")
 
     # Records written before --seeds existed have no seed and count as seed 0.
     metrics = evaluate_run(run_dir, args.split, default_seed=0)
@@ -209,7 +354,7 @@ def run_moleculenet(args: Namespace) -> None:
     config = run_config(
         args,
         run_dir,
-        temperature=0.0,
+        temperature=temperature_used(args, 0.0),
         datasets=datasets,
         shots=shots,
         seeds=seeds,
@@ -281,25 +426,36 @@ def run_chemllmbench(args: Namespace) -> None:
     backend = make_backend(args, temperature=0.0)
     perf_data = None
     with perf_mod.perf_window(args.perf) as perf:
-        counts = runner.generate(
+        counts = generate_items(
+            args,
+            backend,
+            run_dir,
             items=todo,
             group_of=group_of,
             on_group_done=groups,
-            worker=lambda request: task.generate_one(
+            messages_of=task.request_messages,
+            metadata_of=lambda request: task.request_metadata(request, run_id),
+            finish=lambda request, messages, response: task.make_record(
                 backend,
                 request,
+                messages,
+                response,
                 run_id=run_id,
                 thinking=args.thinking,
                 thinking_effort=args.thinking_effort,
             ),
+            custom_id=lambda request: request.custom_id,
             out_path=run_dir / "results.jsonl",
-            workers=args.workers,
             keep=lambda rec: rec["status"] != "api_error",
             status_of=lambda rec: rec["status"],
         )
         if perf is not None and todo:
             completed = sum(v for k, v in counts.items() if k != "dropped")
             perf_data = (perf_mod.write_perf(perf, run_dir, completed), perf.samples)
+    if counts.get("pending"):
+        return  # --no-wait: scored once the batches are collected
+    if is_closed(args):
+        print_cost_summary(run_dir / "results.jsonl")
 
     metrics, _ = task.evaluate_run(run_dir, keys={task.resume_key(r) for r in requests})
     print()
@@ -311,7 +467,7 @@ def run_chemllmbench(args: Namespace) -> None:
     config = run_config(
         args,
         run_dir,
-        temperature=0.0,
+        temperature=temperature_used(args, 0.0),
         subtasks=tasks,
         shots=shots,
         strategy=args.strategy,
@@ -461,32 +617,67 @@ def run_retrosynthesis(args: Namespace) -> None:
         key_of=lambda rec: rec["mol_no"],
     )
 
-    with perf_mod.perf_window(args.perf) as perf:
-        counts = runner.generate(
+    status_of = lambda rec: "ok" if rec.get("proposals") or rec.get("raw") else "empty"  # noqa: E731
+    if is_closed(args) and args.mode == "raw":
+        # Claude/GPT raw runs go through the closed backends, batched by default.
+        backend = make_backend(args)
+        counts = generate_items(
+            args,
+            backend,
+            run_dir,
             items=todo,
             group_of=group_of,
             on_group_done=groups,
-            worker=lambda item: task.generate_one(
+            messages_of=lambda item: task.raw_messages(item[1], model=args.model, prompt=args.prompt),
+            metadata_of=lambda item: {},
+            finish=lambda item, messages, response: task.raw_record(
                 item[1],
                 item[0],
+                messages,
+                response,
                 model=args.model,
-                mode=args.mode,
                 prompt=args.prompt,
                 thinking=args.thinking,
                 thinking_effort=args.thinking_effort,
-                max_output_tokens=args.max_output_tokens,
-                stability_check=args.stability_check,
-                hallucination_check=args.hallucination_check,
-                top_k=args.top_k,
             ),
+            custom_id=lambda item: f"mol{item[0]}",
             out_path=jsonl,
-            workers=args.workers,
             keep=task.keep_record,
-            status_of=lambda rec: "ok" if rec.get("proposals") or rec.get("raw") else "empty",
+            status_of=status_of,
         )
-        if perf is not None and todo:
-            completed = sum(v for k, v in counts.items() if k != "dropped")
-            perf_mod.write_perf(perf, run_dir, completed)
+        if counts.get("pending"):
+            return  # --no-wait: scored once the batches are collected
+        print_cost_summary(jsonl)
+    else:
+        if is_closed(args):
+            print("note        : pipeline/autosolve call DeepRetro's own litellm path in "
+                  "real time (follow-up calls cannot be batched)")
+        with perf_mod.perf_window(args.perf) as perf:
+            counts = runner.generate(
+                items=todo,
+                group_of=group_of,
+                on_group_done=groups,
+                worker=lambda item: task.generate_one(
+                    item[1],
+                    item[0],
+                    model=args.model,
+                    mode=args.mode,
+                    prompt=args.prompt,
+                    thinking=args.thinking,
+                    thinking_effort=args.thinking_effort,
+                    max_output_tokens=args.max_output_tokens,
+                    stability_check=args.stability_check,
+                    hallucination_check=args.hallucination_check,
+                    top_k=args.top_k,
+                ),
+                out_path=jsonl,
+                workers=args.workers,
+                keep=task.keep_record,
+                status_of=status_of,
+            )
+            if perf is not None and todo:
+                completed = sum(v for k, v in counts.items() if k != "dropped")
+                perf_mod.write_perf(perf, run_dir, completed)
 
     records = {rec["mol_no"]: rec for rec in runner.load_jsonl(jsonl)}
     if not records:
@@ -551,9 +742,14 @@ def run_retrosynthesis(args: Namespace) -> None:
     config = run_config(
         args,
         run_dir,
-        # Raw mode samples at DeepRetro's 1.0; the pipeline raises the
+        # Raw mode samples at DeepRetro's 1.0 (a closed model: what was sent,
+        # where the provider default is also 1.0); the pipeline raises the
         # temperature on each retry.
-        temperature=1.0 if args.mode == "raw" else "pipeline schedule",
+        temperature=(
+            (temperature_used(args, 1.0) if is_closed(args) else 1.0)
+            if args.mode == "raw"
+            else "pipeline schedule"
+        ),
         mode=args.mode,
         prompt=args.prompt,
         data=data_slug,

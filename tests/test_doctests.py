@@ -18,6 +18,9 @@ import pytest
 MODULES = [
     "chemberta4.evaluation.thinking",
     "chemberta4.evaluation.hub",
+    "chemberta4.evaluation.pricing",
+    "chemberta4.evaluation.batch",
+    "chemberta4.evaluation.backends.closed",
     "chemberta4.tasks.retrosynthesis.run",
     "chemberta4.tasks.retrosynthesis.az",
     "chemberta4.tasks.retrosynthesis.autosolve",

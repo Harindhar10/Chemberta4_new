@@ -121,6 +121,7 @@ def generate_one(
         "messages": build_messages(smiles, model, messages=messages),
     }
 
+
     if mode == "raw":
         # Temperature 1.0 is DeepRetro's own setting for this evaluation.
         status, text = call_LLM(
@@ -199,6 +200,56 @@ def generate_one(
         "attempts": attempts,
         "explanations": explanations,
         "confidence": confidence,
+    }
+
+
+def raw_messages(row: Any, *, model: str, prompt: str = "deepretro") -> list[dict[str, Any]]:
+    """The ``raw``-mode prompt for one molecule, as DeepRetro builds it for ``model``.
+
+    Used for Claude and GPT, whose ``raw`` runs go through the closed backends
+    (and the Batch API) instead of DeepRetro's own litellm call.
+    """
+    from chemberta4.deepretro.llm import build_messages
+
+    smiles = row["input"]
+    return build_messages(smiles, model, messages=prompt_messages(prompt, smiles))
+
+
+def raw_record(
+    row: Any,
+    mol_no: int,
+    messages: list[dict[str, Any]],
+    response: Any,
+    *,
+    model: str,
+    prompt: str = "deepretro",
+    thinking: bool = False,
+    thinking_effort: str = "medium",
+) -> dict[str, Any]:
+    """The ``raw``-mode record for one closed-model response.
+
+    Same fields as :func:`generate_one` in ``raw`` mode, plus token usage and cost.
+    """
+    usage = response.usage
+    return {
+        "mol_no": mol_no,
+        "model_id": model,
+        "thinking": thinking,
+        "thinking_effort": thinking_effort if thinking else None,
+        "mode": "raw",
+        "prompt": prompt,
+        "input": row["input"],
+        "output": row["output"],
+        "messages": messages,
+        "call_status": 200 if response.ok else response.status,
+        "raw": response.text,
+        "reasoning": response.reasoning,
+        "stop_reason": response.stop_reason or None,
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "cache_read_tokens": usage.get("cache_read_tokens", 0),
+        "cache_write_tokens": usage.get("cache_write_tokens", 0),
+        "cost_usd": usage.get("cost_usd"),
     }
 
 

@@ -23,6 +23,8 @@ dependencies = [
 # Scoring only: deepchem supplies roc_auc_score / rms_score for MoleculeNet.
 score = ["deepchem"]
 wandb = ["wandb"]
+# Claude and GPT (anthropic/... and openai/... models), real time and Batch API.
+closed = ["anthropic", "openai"]
 hub = ["huggingface_hub>=0.34"]
 # autosolve mode: AiZynthFinder, plus the model files named by AZ_MODELS_PATH.
 az = ["aizynthfinder"]

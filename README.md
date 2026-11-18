@@ -205,6 +205,10 @@ Each run writes to `outputs/<task>/<run>/`:
 | `--prompt deepretro\|ether0` | Retrosynthesis: which prompt to use. |
 | `--thinking` | Turn on reasoning for thinking models. |
 | `--workers N` | Number of requests sent at once (vLLM batches them). |
+| `--temperature T` | Override the sampling temperature (see [Claude and GPT](#claude-and-gpt)). |
+| `--realtime` | Claude/GPT: call the API directly instead of the Batch API. |
+| `--no-wait` | Claude/GPT: submit batches and exit; re-run the same command to collect. |
+| `--yes` / `--max-cost N` | Claude/GPT: skip the cost confirmation / refuse above $N. |
 | `--config file.yaml` | Load defaults from a YAML file. |
 
 Run `python scripts/evaluate.py --help` for every option.
@@ -245,6 +249,42 @@ python scripts/evaluate.py --task moleculenet --model hosted_vllm/Qwen/Qwen3-8B 
   directory, so levels never share a checkpoint.
 - If the reasoning uses up the whole token budget, there is no answer. Those records are
   marked `truncated`, not `parse_error`, so you can tell the two apart in the summary.
+
+### Claude and GPT
+
+```sh
+pip install -e ".[closed]"
+export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY
+
+python scripts/evaluate.py --task moleculenet --model anthropic/claude-sonnet-5-5 \
+    --shots 0,5 --seeds 0 --limit 50
+```
+
+No server is needed: the model id names the provider (`anthropic/...` or `openai/...`).
+Example configs are in `configs/evaluation/closed_source/`.
+
+- **Batch API by default (half price).** Requests are submitted as batches and the
+  command waits for them, usually under an hour (at most 24 h). With `--no-wait` it
+  submits and exits; run the same command again to collect and score. Batch ids are kept
+  in `<run>/batches.json`, so nothing is ever submitted twice. `--realtime` calls the API
+  directly at full price, which is handy for a `--limit 5` smoke test.
+- **Prompt caching.** The system prompt (instructions and few-shot examples) is the same
+  for every molecule in a group. Claude caches it with a breakpoint (1-hour lifetime in
+  batch mode, 5 minutes in real time); OpenAI caches it automatically, keyed by a hash
+  of the system prompt. The run summary prints the cache hit rate.
+- **Cost check.** Before sending, the run prints an upper bound of the cost (prices from
+  litellm's price list) and asks to confirm. `--yes` skips the question; `--max-cost N`
+  refuses to send above $N. Every record stores its tokens (uncached input, cache reads,
+  cache writes, output) and `cost_usd`.
+- **Settings are sent as given, never substituted.** `--thinking` off is sent as
+  thinking off, and a temperature is sent only if you set `--temperature`. A model that
+  can't honor a setting rejects the request with an error instead of running under other
+  settings. For example, current Claude models reject any temperature, and some can't turn
+  thinking off. Rejected batch requests are not billed.
+- **Retrosynthesis:** `raw` mode is batched. `pipeline` and `autosolve` ask follow-up
+  questions that depend on the previous answer, so they run in real time through
+  DeepRetro's own litellm path (which caches Claude prompts too).
+- `--perf` reads a vLLM server's metrics, so it does not apply here.
 
 ### Retrosynthesis modes
 
@@ -363,7 +403,9 @@ Good to know:
 
 | Variable | Used for |
 | --- | --- |
-| `HOSTED_VLLM_API_BASE` | URL of the vLLM server, e.g. `http://localhost:8000/v1`. Required. |
+| `HOSTED_VLLM_API_BASE` | URL of the vLLM server, e.g. `http://localhost:8000/v1`. Required for vLLM models. |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Keys for `anthropic/...` and `openai/...` models. |
+| `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` | Optional: send the SDKs elsewhere, e.g. a LiteLLM proxy. |
 | `CHEMBERTA4_MOLNET_DATA` | Reuse existing MoleculeNet splits from this folder. |
 | `DEEPRETRO_DATA_DIR` | DeepRetro's `data/` folder, if not in the default place. |
 | `CHEMBERTA4_CHEMLLMBENCH_DATA` / `CHEMBERTA4_CHEMLLMBENCH_RAW` | Override the ChemLLMBench committed / downloaded data folders. |
@@ -400,7 +442,10 @@ src/chemberta4/
   evaluation/
     backends/base.py          ModelBackend.generate() -> Response
     backends/vllm_server.py   client for the vLLM OpenAI-compatible server
+    backends/closed.py        Claude and GPT through their SDKs, real time and Batch API
     runner.py                 resumable, threaded generation loop
+    batch.py                  resumable Batch API loop (submit, poll, collect)
+    pricing.py                cost estimates and per-record cost
     thinking.py               splits a reasoning trace from the answer
     perf.py                   reads vLLM /metrics during a run
     reporting.py              Weights & Biases logging
@@ -416,7 +461,6 @@ tests/                        pytest suite
 Coming next:
 
 - **ChemEval**.
-- **Closed-source backends** for Claude and GPT.
 - **Model training**: mid- and post-training of open-source models.
 
 The repository map artifact covers the intended shape.

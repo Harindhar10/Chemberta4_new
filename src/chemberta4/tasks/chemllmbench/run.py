@@ -23,7 +23,7 @@ from typing import Any, Iterable, NamedTuple
 import numpy as np
 import pandas as pd
 
-from chemberta4.evaluation.backends.base import ModelBackend
+from chemberta4.evaluation.backends.base import ModelBackend, Response
 from chemberta4.evaluation.runner import load_jsonl
 from chemberta4.tasks.chemllmbench.registry import TASKS, primary_metric
 
@@ -125,34 +125,57 @@ def generate_one(
     thinking: bool = False,
     thinking_effort: str | None = None,
 ) -> dict[str, Any]:
-    """Send one request and return its record.
+    """Send one request and return its record."""
+    messages = request_messages(request)
+    response = backend.generate(messages, metadata=request_metadata(request, run_id))
+    return make_record(
+        backend, request, messages, response,
+        run_id=run_id, thinking=thinking, thinking_effort=thinking_effort,
+    )
+
+
+def request_messages(request: Request) -> list[dict[str, Any]]:
+    """The chat messages for one request."""
+    return [
+        {"role": "system", "content": request.system},
+        {"role": "user", "content": request.user},
+    ]
+
+
+def request_metadata(request: Request, run_id: str) -> dict[str, Any]:
+    """litellm metadata for Langfuse grouping (used by the vLLM backend only)."""
+    return {
+        "session_id": run_id,
+        "trace_name": f"{request.task}/k{request.k}",
+        "generation_name": "predict",
+        "tags": [request.task, f"k={request.k}", request.strategy, "local"],
+        "trace_metadata": {
+            "task": request.task, "k": request.k,
+            "strategy": request.strategy, "row": request.row,
+        },
+    }
+
+
+def make_record(
+    backend: ModelBackend,
+    request: Request,
+    messages: list[dict[str, Any]],
+    response: Response,
+    *,
+    run_id: str,
+    thinking: bool = False,
+    thinking_effort: str | None = None,
+) -> dict[str, Any]:
+    """The stored record for one response, whether real time or from a batch.
 
     The status separates three failures:
 
     - ``api_error``: not kept, so the next run retries it.
-    - ``truncated``: the token cap ended the reasoning before any answer.
+    - ``truncated``: the token cap ended the response before any answer.
     - ``parse_error``: the model answered, but the copied parser found nothing
       in the answer.
     """
     task = TASKS[request.task]
-    messages = [
-        {"role": "system", "content": request.system},
-        {"role": "user", "content": request.user},
-    ]
-    response = backend.generate(
-        messages,
-        metadata={
-            "session_id": run_id,
-            "trace_name": f"{request.task}/k{request.k}",
-            "generation_name": "predict",
-            "tags": [request.task, f"k={request.k}", request.strategy, "local"],
-            "trace_metadata": {
-                "task": request.task, "k": request.k,
-                "strategy": request.strategy, "row": request.row,
-            },
-        },
-    )
-
     prediction: Any = None
     if not response.ok:
         status, error = "api_error", response.text
@@ -161,7 +184,7 @@ def generate_one(
         error = None
         if not _is_parse_failure(prediction):
             status = "ok"
-        elif response.reasoning and not response.text.strip():
+        elif response.truncated:
             status = "truncated"
         else:
             status = "parse_error"
@@ -170,6 +193,7 @@ def generate_one(
     return {
         "run_id": run_id,
         "model": getattr(backend, "model", "unknown"),
+        "provider": getattr(backend, "provider", "") or "local",
         "thinking": thinking,
         "thinking_effort": thinking_effort if thinking else None,
         "task": request.task,
@@ -184,10 +208,14 @@ def generate_one(
         "ground_truth": request.ground_truth,
         "status": status,
         "error": error,
+        "stop_reason": response.stop_reason or None,
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
+        "cache_read_tokens": usage.get("cache_read_tokens", 0),
+        "cache_write_tokens": usage.get("cache_write_tokens", 0),
         "reasoning_tokens": usage.get("reasoning_tokens"),
         "reasoning_chars": usage.get("reasoning_chars", 0),
+        "cost_usd": usage.get("cost_usd"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

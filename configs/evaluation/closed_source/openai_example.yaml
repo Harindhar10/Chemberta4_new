@@ -1,0 +1,32 @@
+# Defaults for a GPT model. Anything on the command line overrides these.
+#
+#   python scripts/evaluate.py --task moleculenet \
+#       --config configs/evaluation/closed_source/openai_example.yaml
+#
+# Needs `pip install .[closed]` and OPENAI_API_KEY. Requests go through the
+# Batch API (half price); OpenAI caches the shared system prompt automatically.
+
+model: openai/gpt-5.1
+
+# Generation. Settings are sent as given; a model that cannot honor one rejects
+# the request. thinking: false on a reasoning model is sent as
+# reasoning_effort "none", which models that always reason refuse.
+thinking: false
+thinking_effort: medium      # low | medium | high  (OpenAI has no "max")
+max_output_tokens: 1024      # reasoning tokens count against this; raise for thinking runs
+# temperature: unset on purpose - reasoning models reject a non-default temperature
+
+# Batch API (default) vs real time
+realtime: false              # true: full price, immediate (smoke tests)
+no_wait: false               # true: submit and exit; re-run to collect and score
+workers: 16                  # concurrent requests in real time only
+# max_cost: 20               # refuse to send if the estimate is above this ($)
+
+# Tasks: same keys as configs/evaluation/open_source/vllm_example.yaml
+shots: "0,5,20"
+seeds: "0"
+split: test
+limit: null
+mode: raw                    # retrosynthesis: only raw is batched
+prompt: deepretro
+data: uspto_50k_test_250

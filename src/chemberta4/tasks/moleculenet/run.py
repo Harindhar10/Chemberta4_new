@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from chemberta4.evaluation.backends.base import ModelBackend
+from chemberta4.evaluation.backends.base import ModelBackend, Response
 from chemberta4.tasks.moleculenet.prompts import (
     build_messages,
     load_split,
@@ -76,6 +76,30 @@ def record_key(rec: dict[str, Any]) -> tuple[str, int, int, int]:
     return rec["dataset"], int(rec["k"]), int(rec.get("seed") or 0), int(rec["row"])
 
 
+def request_messages(request: Request, split: str = "test") -> list[dict[str, Any]]:
+    """The chat messages for one request, with string content only.
+
+    The system prompt is built as text parts; a vLLM server takes string
+    content only, so the parts are joined. The joined text is identical across
+    a (dataset, k, seed) group, which is the prefix the closed backends cache.
+    """
+    dataset, k, seed, row, _ = request
+    messages = build_messages(dataset, split, k, row, seed)
+    return [{"role": "system", "content": system_text(messages)}, messages[1]]
+
+
+def request_metadata(request: Request, run_id: str) -> dict[str, Any]:
+    """litellm metadata for Langfuse grouping (used by the vLLM backend only)."""
+    dataset, k, seed, row, _ = request
+    return {
+        "session_id": run_id,
+        "trace_name": f"{dataset}/k{k}",
+        "generation_name": "predict",
+        "tags": [dataset, f"k={k}", f"seed={seed}", "local"],
+        "trace_metadata": {"dataset": dataset, "k": k, "seed": seed, "row": row},
+    }
+
+
 def generate_one(
     backend: ModelBackend,
     request: Request,
@@ -85,47 +109,51 @@ def generate_one(
     thinking: bool = False,
     thinking_effort: str | None = None,
 ) -> dict[str, Any]:
-    """Send one request and return its record.
+    """Send one request and return its record."""
+    messages = request_messages(request, split)
+    response = backend.generate(messages, metadata=request_metadata(request, run_id))
+    return make_record(
+        backend, request, messages, response,
+        run_id=run_id, thinking=thinking, thinking_effort=thinking_effort,
+    )
+
+
+def make_record(
+    backend: ModelBackend,
+    request: Request,
+    messages: list[dict[str, Any]],
+    response: Response,
+    *,
+    run_id: str,
+    thinking: bool = False,
+    thinking_effort: str | None = None,
+) -> dict[str, Any]:
+    """The stored record for one response, whether real time or from a batch.
 
     The status tells the three failure modes apart, because they need different
     handling: ``api_error`` is retried on the next run, ``truncated`` means the
-    token cap ended the reasoning before any answer, and ``parse_error`` means
+    token cap ended the response before any answer, and ``parse_error`` means
     the model answered but not in JSON.
     """
     dataset, k, seed, row, custom_id = request
-    messages = build_messages(dataset, split, k, row, seed)
-    # The system prompt is built as text parts for prompt caching on the
-    # Anthropic API; a vLLM server takes string content only.
-    messages = [{"role": "system", "content": system_text(messages)}, messages[1]]
-
-    response = backend.generate(
-        messages,
-        metadata={
-            "session_id": run_id,
-            "trace_name": f"{dataset}/k{k}",
-            "generation_name": "predict",
-            "tags": [dataset, f"k={k}", f"seed={seed}", "local"],
-            "trace_metadata": {"dataset": dataset, "k": k, "seed": seed, "row": row},
-        },
-    )
-
     if not response.ok:
         predictions, status, error = {}, "api_error", response.text
     else:
         predictions, error = parse_response(dataset, response.text)
         if error is None:
             status = "ok"
-        elif response.reasoning and not response.text.strip():
+        elif response.truncated:
             status = "truncated"
         else:
             status = "parse_error"
 
     usage = response.usage
+    provider = getattr(backend, "provider", "") or "local"
     return {
         "run_id": run_id,
         "model": getattr(backend, "model", "unknown"),
-        "provider": "local",
-        "mode": "local",
+        "provider": provider,
+        "mode": "local" if provider == "local" else ("batch" if backend.batch else "realtime"),
         "thinking": thinking,
         "thinking_effort": thinking_effort if thinking else None,
         "dataset": dataset,
@@ -139,13 +167,13 @@ def generate_one(
         "predictions": predictions,
         "status": status,
         "error": error,
-        "stop_reason": None,
+        "stop_reason": response.stop_reason or None,
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
-        "cache_read_tokens": 0,
-        "cache_write_tokens": 0,
+        "cache_read_tokens": usage.get("cache_read_tokens", 0),
+        "cache_write_tokens": usage.get("cache_write_tokens", 0),
         "reasoning_tokens": usage.get("reasoning_tokens"),
         "reasoning_chars": usage.get("reasoning_chars", 0),
-        "cost_usd": None,
+        "cost_usd": usage.get("cost_usd"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

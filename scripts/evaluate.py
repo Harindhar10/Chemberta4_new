@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Evaluate a vLLM-served model on MoleculeNet, single-step retrosynthesis or ChemLLMBench.
+"""Evaluate a vLLM-served model, Claude or GPT on MoleculeNet, single-step retrosynthesis or ChemLLMBench.
 
 Start the server first, in its own environment::
 
@@ -18,6 +18,16 @@ then point this at it::
 
     python scripts/evaluate.py --task chemllmbench \
         --model hosted_vllm/Qwen/Qwen3-8B --subtasks property_prediction --shots 0,10
+
+Claude and GPT need no server; the model id names the provider and the key
+comes from $ANTHROPIC_API_KEY / $OPENAI_API_KEY. Requests go through the Batch
+API (half price) unless --realtime is given::
+
+    python scripts/evaluate.py --task moleculenet \
+        --model anthropic/claude-sonnet-5-5 --shots 0,5 --seeds 0 --limit 50
+
+A cost estimate is shown and confirmed before anything is sent (--yes skips
+it). --no-wait submits and exits; re-running the same command collects.
 
 Every task is resumable: finished items are read back from the run's JSONL
 checkpoint and skipped, so an interrupted run is restarted with the same
@@ -59,7 +69,10 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=__doc__,
     )
     p.add_argument("--task", required=True, choices=["moleculenet", "retrosynthesis", "chemllmbench"])
-    p.add_argument("--model", help="litellm id, e.g. hosted_vllm/Qwen/Qwen3-8B")
+    p.add_argument(
+        "--model",
+        help="hosted_vllm/<hf id>, anthropic/<claude id> or openai/<gpt id>",
+    )
     p.add_argument("--config", help="YAML defaults; command-line flags win")
     p.add_argument("--out-root", default=None, help="default: outputs/ in the repo")
 
@@ -82,6 +95,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers", type=int, default=None, help="concurrent requests; vLLM batches them"
     )
     gen.add_argument("--limit", type=int, default=None)
+    gen.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="default: 0 for vLLM on MoleculeNet/ChemLLMBench; for Claude/GPT none is "
+        "sent unless set (current Claude and GPT reasoning models reject one)",
+    )
+
+    closed = p.add_argument_group("Claude / GPT (anthropic/... and openai/... models)")
+    closed.add_argument(
+        "--realtime",
+        action="store_true",
+        default=None,
+        help="call the API directly instead of the Batch API (full price, immediate)",
+    )
+    closed.add_argument(
+        "--no-wait",
+        action="store_true",
+        default=None,
+        help="submit batches and exit; re-run the same command to collect and score",
+    )
+    closed.add_argument(
+        "--yes", "-y", action="store_true", default=None, help="skip the cost confirmation"
+    )
+    closed.add_argument(
+        "--max-cost", type=float, default=None, help="refuse to send above this estimated $"
+    )
 
     mol = p.add_argument_group("moleculenet")
     mol.add_argument("--datasets", default=None, help="comma-separated; default is all")
@@ -189,6 +229,11 @@ def resolve(args: argparse.Namespace, config: dict) -> argparse.Namespace:
         "perf": False,
         "limit": None,
         "max_output_tokens": None,
+        "temperature": None,
+        "realtime": False,
+        "no_wait": False,
+        "yes": False,
+        "max_cost": None,
         "wandb_project": None,
         "hf_repo": None,
         "tag": None,
@@ -206,6 +251,8 @@ def resolve(args: argparse.Namespace, config: dict) -> argparse.Namespace:
         args.model = config.get("model")
     if not args.model:
         sys.exit("--model is required (or set `model:` in --config)")
+    if args.model.startswith(("anthropic/", "openai/")) and args.perf:
+        sys.exit("--perf reads a vLLM server's /metrics; it does not apply to Claude/GPT")
     if args.max_output_tokens is None:
         args.max_output_tokens = 16384 if args.thinking else 1024
     if args.out_root is None:

@@ -1,9 +1,8 @@
 """The one interface every model goes through.
 
 A task builds chat messages and asks a backend to complete them; it never knows
-whether the answer came from a vLLM server, Claude or GPT. Only the vLLM server
-backend exists today (see ``vllm_server.py``); closed-source backends slot in
-behind the same ``generate``.
+whether the answer came from a vLLM server, Claude or GPT. See ``vllm_server.py``
+for vLLM and ``closed.py`` for the Anthropic and OpenAI APIs.
 """
 
 from __future__ import annotations
@@ -29,12 +28,22 @@ class Response:
         error message and the caller should not checkpoint the record.
     usage:
         Token counts as reported, with whatever keys the provider sent.
+    stop_reason:
+        Why generation stopped, as the provider names it (``max_tokens``,
+        ``length``, ...). Empty when the backend does not report it.
     """
 
     text: str
     reasoning: str = ""
     status: int = 200
     usage: dict[str, Any] = field(default_factory=dict)
+    stop_reason: str = ""
+
+    @property
+    def truncated(self) -> bool:
+        """The token cap ended the response before any answer arrived."""
+        hit_cap = self.stop_reason in ("max_tokens", "length")
+        return (bool(self.reasoning) or hit_cap) and not self.text.strip()
 
     @property
     def ok(self) -> bool:

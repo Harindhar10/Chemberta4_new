@@ -1,0 +1,31 @@
+# Defaults for a Claude model. Anything on the command line overrides these.
+#
+#   python scripts/evaluate.py --task moleculenet \
+#       --config configs/evaluation/closed_source/anthropic_example.yaml
+#
+# Needs `pip install .[closed]` and ANTHROPIC_API_KEY. Requests go through the
+# Batch API (half price) with the shared system prompt cached for 1 hour.
+
+model: anthropic/claude-sonnet-5-5
+
+# Generation. Settings are sent as given; a model that cannot honor one rejects
+# the request (e.g. thinking: false on a model whose thinking can't be turned off).
+thinking: false
+thinking_effort: medium      # low | medium | high | max  (sent as output_config.effort)
+max_output_tokens: 1024      # raise to ~16384 for thinking runs
+# temperature: unset on purpose - current Claude models reject any temperature
+
+# Batch API (default) vs real time
+realtime: false              # true: full price, immediate (smoke tests)
+no_wait: false               # true: submit and exit; re-run to collect and score
+workers: 16                  # concurrent requests in real time only
+# max_cost: 20               # refuse to send if the estimate is above this ($)
+
+# Tasks: same keys as configs/evaluation/open_source/vllm_example.yaml
+shots: "0,5,20"
+seeds: "0"
+split: test
+limit: null
+mode: raw                    # retrosynthesis: only raw is batched
+prompt: deepretro
+data: uspto_50k_test_250
