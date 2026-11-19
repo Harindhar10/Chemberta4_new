@@ -283,11 +283,13 @@ def looks_like_openai_reasoning_model(model: str) -> bool:
     --------
     >>> looks_like_openai_reasoning_model("openai/gpt-5")
     True
+    >>> looks_like_openai_reasoning_model("openai/gpt-6-luna")
+    True
     >>> looks_like_openai_reasoning_model("openai/gpt-4o-mini")
     False
     """
     base_name = strip_provider_prefix(model).lower()
-    return base_name.startswith(("o1", "o3", "o4", "gpt-5"))
+    return base_name.startswith(("o1", "o3", "o4", "gpt-5", "gpt-6"))
 
 
 def looks_like_anthropic_reasoning_model(model: str) -> bool:
@@ -694,8 +696,9 @@ def build_completion_params(
         Requested maximum output tokens.
     temperature : float
         Sampling temperature for providers that allow it. OpenAI reasoning
-        models and Anthropic Claude 4 reasoning-capable models are sent
-        ``temperature=1`` when reasoning controls are enabled.
+        models and Anthropic Claude 4+ reasoning-capable models are always
+        sent ``temperature=1``: they reject any other value, with or without
+        reasoning controls.
     enable_thinking : bool, optional
         Whether to send reasoning controls for supported models.
     thinking_effort : {"low", "medium", "high", "max"}, optional
@@ -721,6 +724,11 @@ def build_completion_params(
     >>> (params["max_tokens"], params["temperature"], params["reasoning_effort"])
     (8192, 1, 'medium')
     >>> params = build_completion_params(
+    ...     "openai/gpt-6-luna", messages, 16, 1.4, enable_thinking=False
+    ... )
+    >>> params["temperature"], "seed" in params
+    (1, False)
+    >>> params = build_completion_params(
     ...     "hosted_vllm/zai-org/GLM-4.7-Flash", messages, 1024, 0.0,
     ...     enable_thinking=False,
     ... )
@@ -745,9 +753,7 @@ def build_completion_params(
         "model": selection.completion_model,
         "messages": apply_prompt_caching(messages, selection),
         selection.output_token_param: output_token_limit,
-        "temperature": (
-            1 if selection.requires_temperature_one and enable_thinking else temperature
-        ),
+        "temperature": 1 if selection.requires_temperature_one else temperature,
         # Bound every call: a request deadline so a silent provider socket cannot
         # hang indefinitely, and a retry cap so transient errors cannot re-bill
         # full tokens without limit. Both are env-overridable.
