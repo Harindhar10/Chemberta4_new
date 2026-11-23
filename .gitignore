@@ -17,4 +17,7 @@ outputs/
 az_models/
 
 .env
+
+# local debugging scripts
+debug/
 wandb/

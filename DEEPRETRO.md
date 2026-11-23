@@ -66,7 +66,7 @@ Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
 | `bc06e56` | `llm_helpers.py` | gpt-6 counts as a reasoning model; reasoning models always get `temperature=1` |
 | `3768fdc` | `llm_helpers.py` | thinking off sends the lowest `reasoning_effort` to OpenAI reasoning models |
 | `3768fdc` | `llm_interface.py` | warn when a response is empty because the token budget ran out |
-| uncommitted | `llm_helpers.py` | OpenAI `reasoning_effort` is exempt from `drop_params` via `allowed_openai_params` |
+| `04985f5` | `llm_helpers.py` | OpenAI `reasoning_effort` is exempt from `drop_params` via `allowed_openai_params` |
 
 1. **Per-attempt trace (`062ed83`).** `llm_pipeline(..., trace=None)` appends one
    dict per attempt, with `attempt`, `temperature`, `model`, `status` and `raw`
@@ -99,7 +99,7 @@ Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
 5. **Empty-response warning (`3768fdc`).** `LLMInterface.call` logs a warning
    with the token limit and reasoning-token count when the content is empty and
    `finish_reason == "length"`, so this failure shows in the logs.
-6. **`reasoning_effort` survives `drop_params` (uncommitted).** `llm.py` sets
+6. **`reasoning_effort` survives `drop_params` (`04985f5`).** `llm.py` sets
    `litellm.drop_params = True`. A LiteLLM whose model map predates a model (the
    remote box's system LiteLLM, for gpt-6-luna) treats `reasoning_effort` as
    unsupported and strips it silently, so OpenAI reasoned at `"medium"` anyway
