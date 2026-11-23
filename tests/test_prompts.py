@@ -99,6 +99,34 @@ def test_copied_retro_prompt_matches_deepretro() -> None:
         )
 
 
+def test_openai_user_prompt_drops_repeated_preamble() -> None:
+    """The OpenAI user prompt must not repeat the system prompt's paragraphs."""
+    from chemberta4.deepretro.prompts import (
+        USER_PROMPT_OPENAI,
+        USER_PROMPT_OPENAI_NO_PREAMBLE,
+    )
+
+    assert USER_PROMPT_OPENAI_NO_PREAMBLE.startswith("Perform a single-step")
+    assert "You are an expert" not in USER_PROMPT_OPENAI_NO_PREAMBLE
+    assert "{target_smiles}" in USER_PROMPT_OPENAI_NO_PREAMBLE
+    assert USER_PROMPT_OPENAI.endswith(USER_PROMPT_OPENAI_NO_PREAMBLE)
+
+
+def test_seven_ring_addon_sent_once_in_user_message() -> None:
+    """The 7-membered-ring addon goes in the user message only."""
+    from chemberta4.deepretro.llm_interface import LLMRequest, create_llm_interface
+    from chemberta4.deepretro.prompts import ADDON_PROMPT_7_MEMBER
+
+    target = "O=C1CCCn2c(=O)[nH]c3cccc1c32"
+    request = LLMRequest(target, "openai/gpt-4o-mini")
+    system, user = create_llm_interface(request.model).build_messages(request)
+
+    assert ADDON_PROMPT_7_MEMBER not in system["content"]
+    assert user["content"].count(ADDON_PROMPT_7_MEMBER) == 1
+    assert target in user["content"]
+    assert not user["content"].startswith("You are an expert")
+
+
 def test_ether0_prompt_asks_for_reaction_smiles() -> None:
     """The ether0 prompt must name the molecule and the format it wants."""
     from chemberta4.tasks.retrosynthesis.run import ether0_messages

@@ -366,6 +366,13 @@ In the "confidence_scores" array, provide a confidence score for each suggestion
 Ensure that the number of entries in "data", "explanation", and "confidence_scores" are the same.
 """
 
+# chemberta4 addition, not in DeepRetro: USER_PROMPT_OPENAI without the three
+# paragraphs it repeats from SYS_PROMPT_OPENAI. Derived from the original so the
+# rest of the text stays identical.
+USER_PROMPT_OPENAI_NO_PREAMBLE = USER_PROMPT_OPENAI[
+    USER_PROMPT_OPENAI.index("Perform a single-step"):
+]
+
 SYS_PROMPT_DEEPSEEK = """You are an expert organic chemist specializing in retrosynthesis. When given a target molecule, you will perform a single-step retrosynthesis, providing 3-5 possible precursor molecules or reactions that could lead to the formation of the target molecule. 
 
 Present your final analysis in a specific JSON format. For each suggestion, provide the precursor molecules in SMILES notation and a brief explanation of the reaction type and any key conditions or reagents needed. Use standard organic chemistry notation and terminology in your explanations. 

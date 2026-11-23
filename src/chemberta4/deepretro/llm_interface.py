@@ -42,7 +42,7 @@ from chemberta4.deepretro.prompts import (
     USER_PROMPT,
     USER_PROMPT_DEEPSEEK,
     USER_PROMPT_DEEPSEEK_V4,
-    USER_PROMPT_OPENAI,
+    USER_PROMPT_OPENAI_NO_PREAMBLE,
     USER_PROMPT_V4,
 )
 
@@ -59,8 +59,8 @@ ETHER0_ANSWER_END_TAG = "<|answer_end|>"
 PROMPT_CONFIG = {
     ("deepseek", "standard"): (SYS_PROMPT_DEEPSEEK, USER_PROMPT_DEEPSEEK, 16384),
     ("deepseek", "advanced"): (SYS_PROMPT_V4, USER_PROMPT_DEEPSEEK_V4, 16384),
-    ("openai", "standard"): (SYS_PROMPT_OPENAI, USER_PROMPT_OPENAI, 16384),
-    ("openai", "advanced"): (SYS_PROMPT_OPENAI, USER_PROMPT_OPENAI, 16384),
+    ("openai", "standard"): (SYS_PROMPT_OPENAI, USER_PROMPT_OPENAI_NO_PREAMBLE, 16384),
+    ("openai", "advanced"): (SYS_PROMPT_OPENAI, USER_PROMPT_OPENAI_NO_PREAMBLE, 16384),
     ("default", "standard"): (SYS_PROMPT, USER_PROMPT, 16384),
     ("default", "advanced"): (SYS_PROMPT_V4, USER_PROMPT_V4, 16384),
 }
@@ -227,7 +227,7 @@ class LLMInterface(ABC):
             user_content = f"{user_content}\n\n{addon}"
 
         return [
-            {"role": "system", "content": sys_prompt + addon},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_content},
         ]
 

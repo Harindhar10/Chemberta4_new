@@ -57,7 +57,7 @@ Each file repeats its provenance in a three-line header comment.
 
 These are chemberta4's own changes to the copied files. A re-sync must keep them.
 Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
-`prompts.py`, `one_step_eval.py` and the checkers) have only the changes above.
+`one_step_eval.py` and the checkers) have only the changes above.
 
 | Commit | File | Edit |
 | --- | --- | --- |
@@ -67,6 +67,8 @@ Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
 | `3768fdc` | `llm_helpers.py` | thinking off sends the lowest `reasoning_effort` to OpenAI reasoning models |
 | `3768fdc` | `llm_interface.py` | warn when a response is empty because the token budget ran out |
 | `04985f5` | `llm_helpers.py` | OpenAI `reasoning_effort` is exempt from `drop_params` via `allowed_openai_params` |
+| (uncommitted) | `prompts.py` | new `USER_PROMPT_OPENAI_NO_PREAMBLE`; `USER_PROMPT_OPENAI` itself is unchanged |
+| (uncommitted) | `llm_interface.py` | OpenAI uses `USER_PROMPT_OPENAI_NO_PREAMBLE`; the 7-ring addon goes in the user message only |
 
 1. **Per-attempt trace (`062ed83`).** `llm_pipeline(..., trace=None)` appends one
    dict per attempt, with `attempt`, `temperature`, `model`, `status` and `raw`
@@ -106,6 +108,16 @@ Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
    and edit 4 had no effect. Whenever `build_completion_params` sets
    `reasoning_effort` for an OpenAI model, it also sets
    `allowed_openai_params=["reasoning_effort"]`, which exempts it from the drop.
+7. **No duplicated prompt text (uncommitted).** Upstream `USER_PROMPT_OPENAI`
+   opens with the same three paragraphs as `SYS_PROMPT_OPENAI`, so OpenAI models
+   received them twice. `USER_PROMPT_OPENAI` is kept unchanged, so it still
+   matches DeepRetro. A new `USER_PROMPT_OPENAI_NO_PREAMBLE`, sliced from it at
+   "Perform a single-step", is what both OpenAI `PROMPT_CONFIG` entries now use.
+   `build_messages` also stopped appending the 7-membered-ring addon to the
+   system message: it now appears only in the user message, for every family.
+   As a result, OpenAI scores from before and after this edit are not strictly
+   comparable. To go back, point the OpenAI entries at `USER_PROMPT_OPENAI` and
+   restore `sys_prompt + addon`.
 
 ## Re-syncing
 
