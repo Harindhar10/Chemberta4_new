@@ -7,7 +7,7 @@ each prompt goes to the vLLM server through the backend, and each answer is
 checkpointed to ``results.jsonl`` as it arrives, so a run can be resumed.
 
 Scoring re-parses the stored raw text with the copied parsers and calls the
-copied metric functions. Scoring never reads the stored ``prediction``, so
+copied metric functions. Scoring never reads the stored ``parsed_answer``, so
 after a parser fix the old generations can be scored again without generating
 them again.
 """
@@ -112,6 +112,11 @@ def done_keys(records: Iterable[dict[str, Any]]) -> set[tuple[str, int, str, int
     return {record_key(rec) for rec in records if rec.get("status") != "api_error"}
 
 
+def _raw_output(rec: dict[str, Any]) -> str:
+    """The model's raw answer. Records written before the rename store it as ``text``."""
+    return rec["raw_output"] if "raw_output" in rec else rec["text"]
+
+
 def _is_parse_failure(prediction: Any) -> bool:
     """The copied parsers return "" (string tasks) or -1 (Yes/No tasks) on failure."""
     return prediction == "" or prediction == -1 or prediction is None
@@ -202,9 +207,9 @@ def make_record(
         "row": request.row,
         "custom_id": request.custom_id,
         "messages": messages,
-        "text": response.text,
+        "raw_output": response.text,
         "reasoning": response.reasoning,
-        "prediction": prediction,
+        "parsed_answer": prediction,
         "ground_truth": request.ground_truth,
         "status": status,
         "error": error,
@@ -261,7 +266,7 @@ def evaluate_run(
         recs = sorted({int(r["row"]): r for r in recs}.values(), key=lambda r: int(r["row"]))
         task = TASKS[key]
         family = task.family()
-        preds = [_plain(family.parse(r["text"], task.subtask)) for r in recs]
+        preds = [_plain(family.parse(_raw_output(r), task.subtask)) for r in recs]
         y_true = [r["ground_truth"] for r in recs]
         try:
             metrics = {m: _plain(v) for m, v in family.score(y_true, preds, task.subtask).items()}
@@ -285,8 +290,8 @@ def evaluate_run(
         pd.DataFrame({
             "row": [r["row"] for r in recs],
             "custom_id": [r.get("custom_id") for r in recs],
-            "raw_output": [r["text"] for r in recs],
-            "prediction": preds,
+            "raw_output": [_raw_output(r) for r in recs],
+            "parsed_answer": preds,
             "ground_truth": y_true,
             "status": [r["status"] for r in recs],
         }).to_csv(pred_dir / f"{key}_k{k}_{strategy}.csv", index=False)

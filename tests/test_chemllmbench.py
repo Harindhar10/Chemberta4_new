@@ -226,7 +226,7 @@ def test_parse_failure_is_kept_and_counted(tmp_path) -> None:
             return Response(text="", reasoning="ran out of tokens")
 
     rec = run.generate_one(Empty(), request, run_id="t")
-    assert rec["status"] == "truncated" and rec["prediction"] == ""
+    assert rec["status"] == "truncated" and rec["parsed_answer"] == ""
     (tmp_path / "results.jsonl").write_text(json.dumps(rec) + "\n")
     metrics, _ = run.evaluate_run(tmp_path)
     values = metrics.set_index("metric")["value"]
