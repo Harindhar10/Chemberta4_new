@@ -29,7 +29,9 @@ modes, found by following every `from deepretro...` import in each file.
 
 ## What was changed
 
-Nothing but the following. No reformatting, no renames, no logic edits.
+At copy time, nothing but the following: no reformatting, no renames, no logic
+edits. The logic edits made since then are listed under
+[Edits since the copy](#edits-since-the-copy).
 
 1. **Import paths.** `deepretro.utils.X` and `deepretro.algorithms.X` became
    `chemberta4.deepretro.X`, flattening the two subpackages into one.
@@ -51,9 +53,55 @@ Nothing but the following. No reformatting, no renames, no logic edits.
 
 Each file repeats its provenance in a three-line header comment.
 
+### Edits since the copy
+
+These are chemberta4's own changes to the copied files. A re-sync must keep them.
+Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
+`prompts.py`, `one_step_eval.py` and the checkers) have only the changes above.
+
+| Commit | File | Edit |
+| --- | --- | --- |
+| `062ed83` | `llm.py` | `llm_pipeline` takes an optional `trace` list |
+| `2691b3a` | `llm.py` | `llm_pipeline` takes and forwards `thinking_effort` |
+| `bc06e56` | `llm_helpers.py` | gpt-6 counts as a reasoning model; reasoning models always get `temperature=1` |
+| uncommitted | `llm_helpers.py` | thinking off sends the lowest `reasoning_effort` to OpenAI reasoning models |
+| uncommitted | `llm_interface.py` | warn when a response is empty because the token budget ran out |
+
+1. **Per-attempt trace (`062ed83`).** `llm_pipeline(..., trace=None)` appends one
+   dict per attempt, with `attempt`, `temperature`, `model`, `status` and `raw`
+   (the response text, `None` if there was none). `status` is the failing status,
+   204 if the response parsed but every pathway was filtered out, else 200. The
+   return value is unchanged. The logged `temperature` is the one the retry loop
+   requested, not necessarily the one sent: see edit 3.
+2. **`thinking_effort` forwarded (`2691b3a`).** Upstream `llm_pipeline` has no
+   `thinking_effort` parameter, so the effort always fell back to the request
+   default (`"medium"`). It is now a parameter (default `"medium"`) passed into
+   the `LLMRequest`.
+3. **gpt-6 and `temperature=1` (`bc06e56`).** `looks_like_openai_reasoning_model`
+   also matches `gpt-6` (for `openai/gpt-6-luna`). `build_completion_params` sends
+   `temperature=1` to every model with `requires_temperature_one`, whether or not
+   thinking is on. Upstream does that only with thinking on
+   (`requires_temperature_one and enable_thinking`), and these models reject any
+   other temperature either way. The retry loop's temperature sweep therefore
+   has no effect on them.
+4. **Lowest reasoning effort with thinking off (uncommitted).** New helper
+   `openai_lowest_reasoning_effort` returns `"none"` for gpt-5.1+ and gpt-6,
+   `"minimal"` for base gpt-5 and `"low"` for o1/o3/o4. When thinking is off,
+   `build_completion_params` sends it as `reasoning_effort` to OpenAI reasoning
+   models. Upstream sends nothing, and OpenAI then reasons at `"medium"`: with a
+   small `--max-output-tokens`, the hidden reasoning used up the whole budget and
+   gpt-6-luna returned empty content on every attempt. That empty content is
+   logged as status 502 ("no JSON found" from `OpenAILLM.parse_response`), not an
+   HTTP error. Anthropic is unchanged: Claude does not think unless asked.
+   Unverified: that gpt-6-luna accepts `"none"`. If it returns 400, use `"low"`.
+5. **Empty-response warning (uncommitted).** `LLMInterface.call` logs a warning
+   with the token limit and reasoning-token count when the content is empty and
+   `finish_reason == "length"`, so this failure shows in the logs.
+
 ## Re-syncing
 
-Because only import lines changed, a re-sync is a diff:
+Only import lines and the [edits above](#edits-since-the-copy) differ from
+DeepRetro, so a re-sync is a diff, followed by re-applying those edits:
 
 ```sh
 cd ~/Documents/DFS/DFS/DeepRetro

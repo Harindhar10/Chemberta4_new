@@ -1,6 +1,6 @@
 # Copied from DeepRetro: deepretro/utils/llm.py
-# Commit bf9acf0 (2026-10-30). Only import paths were rewritten.
-# Do not edit by hand; see DEEPRETRO.md to re-sync.
+# Commit bf9acf0 (2026-10-30). Import paths rewritten, plus local edits
+# listed in DEEPRETRO.md ("Edits since the copy"). Record any new edit there.
 """LLM-based single-step retrosynthesis helpers.
 
 This module calls chat-completion LLMs through LiteLLM, parses tagged model
