@@ -1,0 +1,3 @@
+mol_no,input,ground_truth,parse_status,n_proposals,proposals,any_correct,all_correct,maxfrag_correct,any_correct_topk,all_correct_topk,maxfrag_correct_topk,first_hit_rank,not_common,missed,has_invalid_smiles,solved,n_routes,error,seconds
+0,CS(=O)c1cccc(-c2nc(C=O)ccc2OCCO[Si](C)(C)C(C)(C)C)c1,CC(C)(C)[Si](C)(C)OCCOc1ccc(C=O)nc1Br.CS(=O)c1cccc(B(O)O)c1,200,1,"[['CS(=O)c1cccc(B(O)O)c1', 'CC(C)(C)[Si](C)(C)OCCOc1ccc(C=O)nc1Cl']]",1,0,0,1,0,0,,['CC(C)(C)[Si](C)(C)OCCOc1ccc(C=O)nc1Cl'],['CC(C)(C)[Si](C)(C)OCCOc1ccc(C=O)nc1Br'],0,True,9,,65.05
+1,CC(C)=CCSc1ccc(Br)cc1,CC(C)=CCBr.Sc1ccc(Br)cc1,200,1,"[['CC(C)=CCBr', 'Sc1ccc(Br)cc1']]",1,1,1,1,1,1,1.0,[],[],0,True,5,,34.01

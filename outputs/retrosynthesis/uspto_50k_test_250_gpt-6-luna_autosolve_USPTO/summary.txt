@@ -1,0 +1,66 @@
+model: openai/gpt-6-luna   az_model: USPTO   scored 2 molecules
+AZ solved 100.0%, answered (has a first step) 100.0%, 0 AZ errors, 49.5 s/molecule
+On the 2 molecules AZ answered -- top-1 all_correct: AZ 50.0% vs LLM 50.0%
+
+##### view: hybrid #####
+model: openai/gpt-6-luna  mode: autosolve
+scored 2 molecules
+
+=== top-1 (first proposal) ===
+All correct % 50.00  (1/2)
+Any correct % 100.00  (2/2)
+MaxFrag     % 50.00  (1/2)
+
+=== top-k (best proposal) ===
+All correct % 50.00  (1/2)
+Any correct % 100.00  (2/2)
+MaxFrag     % 50.00  (1/2)
+
+=== response quality ===
+parse failures  : 0.00%
+invalid SMILES  : 0.00%
+mean proposals  : 1.00
+
+Denominator is all 2 scored rows -- parse failures count as incorrect.
+
+##### view: az #####
+model: openai/gpt-6-luna  mode: autosolve
+scored 2 molecules
+
+=== top-1 (first proposal) ===
+All correct % 50.00  (1/2)
+Any correct % 100.00  (2/2)
+MaxFrag     % 50.00  (1/2)
+
+=== top-k (best proposal) ===
+All correct % 50.00  (1/2)
+Any correct % 100.00  (2/2)
+MaxFrag     % 50.00  (1/2)
+
+=== response quality ===
+parse failures  : 0.00%
+invalid SMILES  : 0.00%
+mean proposals  : 1.00
+
+Denominator is all 2 scored rows -- parse failures count as incorrect.
+
+##### view: llm #####
+model: openai/gpt-6-luna  mode: autosolve
+scored 2 molecules
+
+=== top-1 (first proposal) ===
+All correct % 50.00  (1/2)
+Any correct % 50.00  (1/2)
+MaxFrag     % 50.00  (1/2)
+
+=== top-k (best proposal) ===
+All correct % 50.00  (1/2)
+Any correct % 50.00  (1/2)
+MaxFrag     % 50.00  (1/2)
+
+=== response quality ===
+parse failures  : 0.00%
+invalid SMILES  : 0.00%
+mean proposals  : 3.00
+
+Denominator is all 2 scored rows -- parse failures count as incorrect.

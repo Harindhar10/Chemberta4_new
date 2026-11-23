@@ -1,0 +1,135 @@
+{
+  "run": "uspto_50k_test_250_gpt-6-luna_autosolve_USPTO",
+  "model_id": "openai/gpt-6-luna",
+  "mode": "autosolve",
+  "prompt": "deepretro",
+  "thinking": false,
+  "thinking_effort": null,
+  "max_new_tokens": 1024,
+  "data_csv": "/root/workspace/Chemberta4_new/data/processed/retrosynthesis/uspto_50k_test_250.csv",
+  "n_total": 250,
+  "az_model": "USPTO",
+  "n_scored": 2,
+  "coverage": {
+    "az_solved_pct": 100.0,
+    "az_answered_pct": 100.0,
+    "az_errors": 0,
+    "az_mean_seconds": 49.53
+  },
+  "az_answered_subset": {
+    "az": {
+      "top1_all_correct": 50.0,
+      "topk_all_correct": 50.0,
+      "top1_maxfrag": 50.0
+    },
+    "llm": {
+      "top1_all_correct": 50.0,
+      "topk_all_correct": 50.0,
+      "top1_maxfrag": 50.0
+    }
+  },
+  "views": {
+    "hybrid": {
+      "run": "uspto_50k_test_250_gpt-6-luna_autosolve_USPTO",
+      "model_id": "openai/gpt-6-luna",
+      "mode": "autosolve",
+      "prompt": "deepretro",
+      "thinking": false,
+      "thinking_effort": null,
+      "max_new_tokens": 1024,
+      "data_csv": "/root/workspace/Chemberta4_new/data/processed/retrosynthesis/uspto_50k_test_250.csv",
+      "n_total": 250,
+      "az_model": "USPTO",
+      "view": "hybrid",
+      "n_scored": 2,
+      "timestamp": "2026-11-23T11:22:28",
+      "top1": {
+        "all_correct": 50.0,
+        "any_correct": 100.0,
+        "maxfrag": 50.0,
+        "n_all_correct": 1,
+        "n_any_correct": 2,
+        "n_maxfrag": 1
+      },
+      "topk": {
+        "all_correct": 50.0,
+        "any_correct": 100.0,
+        "maxfrag": 50.0,
+        "n_all_correct": 1,
+        "n_any_correct": 2,
+        "n_maxfrag": 1
+      },
+      "parse_failures_pct": 0.0,
+      "invalid_smiles_pct": 0.0,
+      "mean_proposals": 1.0
+    },
+    "az": {
+      "run": "uspto_50k_test_250_gpt-6-luna_autosolve_USPTO",
+      "model_id": "openai/gpt-6-luna",
+      "mode": "autosolve",
+      "prompt": "deepretro",
+      "thinking": false,
+      "thinking_effort": null,
+      "max_new_tokens": 1024,
+      "data_csv": "/root/workspace/Chemberta4_new/data/processed/retrosynthesis/uspto_50k_test_250.csv",
+      "n_total": 250,
+      "az_model": "USPTO",
+      "view": "az",
+      "n_scored": 2,
+      "timestamp": "2026-11-23T11:22:28",
+      "top1": {
+        "all_correct": 50.0,
+        "any_correct": 100.0,
+        "maxfrag": 50.0,
+        "n_all_correct": 1,
+        "n_any_correct": 2,
+        "n_maxfrag": 1
+      },
+      "topk": {
+        "all_correct": 50.0,
+        "any_correct": 100.0,
+        "maxfrag": 50.0,
+        "n_all_correct": 1,
+        "n_any_correct": 2,
+        "n_maxfrag": 1
+      },
+      "parse_failures_pct": 0.0,
+      "invalid_smiles_pct": 0.0,
+      "mean_proposals": 1.0
+    },
+    "llm": {
+      "run": "uspto_50k_test_250_gpt-6-luna_autosolve_USPTO",
+      "model_id": "openai/gpt-6-luna",
+      "mode": "autosolve",
+      "prompt": "deepretro",
+      "thinking": false,
+      "thinking_effort": null,
+      "max_new_tokens": 1024,
+      "data_csv": "/root/workspace/Chemberta4_new/data/processed/retrosynthesis/uspto_50k_test_250.csv",
+      "n_total": 250,
+      "az_model": "USPTO",
+      "view": "llm",
+      "n_scored": 2,
+      "timestamp": "2026-11-23T11:22:28",
+      "top1": {
+        "all_correct": 50.0,
+        "any_correct": 50.0,
+        "maxfrag": 50.0,
+        "n_all_correct": 1,
+        "n_any_correct": 1,
+        "n_maxfrag": 1
+      },
+      "topk": {
+        "all_correct": 50.0,
+        "any_correct": 50.0,
+        "maxfrag": 50.0,
+        "n_all_correct": 1,
+        "n_any_correct": 1,
+        "n_maxfrag": 1
+      },
+      "parse_failures_pct": 0.0,
+      "invalid_smiles_pct": 0.0,
+      "mean_proposals": 3.0
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "task": "retrosynthesis",
+  "model": "openai/gpt-6-luna",
+  "temperature": "pipeline schedule",
+  "mode": "autosolve",
+  "prompt": "deepretro",
+  "data": "uspto_50k_test_250",
+  "stability_check": true,
+  "hallucination_check": true,
+  "az_model": "USPTO",
+  "top_k": 3,
+  "thinking": false,
+  "thinking_effort": null,
+  "max_output_tokens": 1024,
+  "workers": 64,
+  "limit": 2,
+  "tag": null,
+  "git_commit": "d061b5b9ebbd24e6720e1c465f8223d13e9e232c",
+  "timestamp": "2026-11-23T11:22:28+00:00"
+}
