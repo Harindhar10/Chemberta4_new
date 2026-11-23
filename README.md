@@ -79,7 +79,7 @@ scaffold similarity.
   prediction, invalid-SMILES % for reactions, and ROUGE, METEOR, Tanimoto similarities,
   validity and FCD for molecule design.
 - **The `chemllmbench` extra** is needed to score `mol_caption` and `mol_design`
-  (`pip install -e '.[chemllmbench]'`). FCD also needs `fcd` to be importable, otherwise
+  (`uv pip install -e '.[chemllmbench]'`). FCD also needs `fcd` to be importable, otherwise
   it is NaN.
 
 ### Comparable with earlier results
@@ -253,7 +253,7 @@ python scripts/evaluate.py --task moleculenet --model hosted_vllm/Qwen/Qwen3-8B 
 ### Claude and GPT
 
 ```sh
-pip install -e ".[closed]"
+uv pip install -e ".[closed]"
 export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY
 
 python scripts/evaluate.py --task moleculenet --model anthropic/claude-sonnet-5-5 \
@@ -292,7 +292,7 @@ Example configs are in `configs/evaluation/closed_source/`.
 | --- | --- |
 | `raw` | One answer per molecule, parsed at scoring time. The model on its own. |
 | `pipeline` | DeepRetro's `llm_pipeline`: temperature retries, `validity_check`, and optional `--stability-check` and `--hallucination-check`. What the multi-step search would receive. |
-| `autosolve` | DeepRetro's `AutoSolver` at depth 1: AiZynthFinder first, and the LLM only when AZ does not solve the target. Scores three views: `hybrid` (what `AutoSolver` returns), `az` and `llm`. Needs `pip install .[az]` and `AZ_MODELS_PATH`. |
+| `autosolve` | DeepRetro's `AutoSolver` at depth 1: AiZynthFinder first, and the LLM only when AZ does not solve the target. Scores three views: `hybrid` (what `AutoSolver` returns), `az` and `llm`. Needs `uv pip install .[az]` and `AZ_MODELS_PATH`. |
 
 `--prompt ether0` swaps in the prompt that futurehouse/ether0 was trained on. It asks for a
 single reaction SMILES, so only top-1 is meaningful with it.
@@ -328,7 +328,7 @@ the repo root), so run every command from the same place. An absolute path also 
 **USPTO (public):**
 
 ```bash
-pip install -e ".[az]"
+uv pip install -e ".[az]"
 export AZ_MODELS_PATH=az_models   # git-ignored
 mkdir -p "$AZ_MODELS_PATH/USPTO"
 python -m aizynthfinder.tools.download_public_data "$AZ_MODELS_PATH/USPTO"
