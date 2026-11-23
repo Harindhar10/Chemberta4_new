@@ -1,6 +1,6 @@
 # Copied from DeepRetro: deepretro/utils/llm_interface.py
-# Commit bf9acf0 (2026-10-30). Only import paths were rewritten.
-# Do not edit by hand; see DEEPRETRO.md to re-sync.
+# Commit bf9acf0 (2026-10-30). Import paths rewritten, plus local edits
+# listed in DEEPRETRO.md ("Edits since the copy"). Record any new edit there.
 """Provider-specific LLM interfaces for DeepRetro retrosynthesis calls."""
 
 from __future__ import annotations
@@ -345,6 +345,16 @@ class LLMInterface(ABC):
                 logger.debug(
                     "Received LLM response", response_length=len(response_text)
                 )
+                finish_reason = getattr(response.choices[0], "finish_reason", None)
+                if not response_text and finish_reason == "length":
+                    logger.warning(
+                        "Empty LLM response: output token budget exhausted",
+                        model=self.selection.completion_model,
+                        max_output_tokens=params.get(
+                            self.selection.output_token_param
+                        ),
+                        reasoning_tokens=reasoning_token_count(response),
+                    )
                 return LLMResponse(
                     status_code=200,
                     text=response_text,

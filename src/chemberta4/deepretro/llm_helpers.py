@@ -1,6 +1,6 @@
 # Copied from DeepRetro: deepretro/utils/llm_helpers.py
-# Commit bf9acf0 (2026-10-30). Only import paths were rewritten.
-# Do not edit by hand; see DEEPRETRO.md to re-sync.
+# Commit bf9acf0 (2026-10-30). Import paths rewritten, plus local edits
+# listed in DEEPRETRO.md ("Edits since the copy"). Record any new edit there.
 """Helper utilities for DeepRetro LLM provider handling."""
 
 from __future__ import annotations
@@ -290,6 +290,43 @@ def looks_like_openai_reasoning_model(model: str) -> bool:
     """
     base_name = strip_provider_prefix(model).lower()
     return base_name.startswith(("o1", "o3", "o4", "gpt-5", "gpt-6"))
+
+
+def openai_lowest_reasoning_effort(model: str) -> str:
+    """Return the lowest ``reasoning_effort`` an OpenAI reasoning model accepts.
+
+    OpenAI reasoning models reason at ``"medium"`` when ``reasoning_effort`` is
+    omitted, so "thinking off" has to be requested explicitly. gpt-5.1+ and
+    gpt-6 accept ``"none"``, base gpt-5 bottoms out at ``"minimal"``, and the
+    o-series at ``"low"``.
+
+    Parameters
+    ----------
+    model : str
+        OpenAI reasoning-model identifier, optionally provider-prefixed.
+
+    Returns
+    -------
+    str
+        ``"none"``, ``"minimal"``, or ``"low"``.
+
+    Examples
+    --------
+    >>> openai_lowest_reasoning_effort("openai/gpt-6-luna")
+    'none'
+    >>> openai_lowest_reasoning_effort("openai/gpt-5.1")
+    'none'
+    >>> openai_lowest_reasoning_effort("openai/gpt-5-mini")
+    'minimal'
+    >>> openai_lowest_reasoning_effort("openai/o3")
+    'low'
+    """
+    base_name = strip_provider_prefix(model).lower()
+    if base_name.startswith("gpt-6") or re.match(r"gpt-5\.[1-9]", base_name):
+        return "none"
+    if base_name.startswith("gpt-5"):
+        return "minimal"
+    return "low"
 
 
 def looks_like_anthropic_reasoning_model(model: str) -> bool:
@@ -726,8 +763,17 @@ def build_completion_params(
     >>> params = build_completion_params(
     ...     "openai/gpt-6-luna", messages, 16, 1.4, enable_thinking=False
     ... )
-    >>> params["temperature"], "seed" in params
-    (1, False)
+    >>> params["temperature"], "seed" in params, params["reasoning_effort"]
+    (1, False, 'none')
+    >>> params = build_completion_params(
+    ...     "anthropic/claude-sonnet-4-6", messages, 16, 0.2, enable_thinking=False
+    ... )
+    >>> "reasoning_effort" in params
+    False
+    >>> "reasoning_effort" in build_completion_params(
+    ...     "openai/gpt-4o-mini", messages, 16, 0.0, enable_thinking=False
+    ... )
+    False
     >>> params = build_completion_params(
     ...     "hosted_vllm/zai-org/GLM-4.7-Flash", messages, 1024, 0.0,
     ...     enable_thinking=False,
@@ -767,6 +813,13 @@ def build_completion_params(
         params["metadata"] = metadata
     if enable_thinking and selection.supports_reasoning_effort:
         params["reasoning_effort"] = thinking_effort
+    elif selection.supports_reasoning_effort and selection.provider == "openai":
+        # Omitting reasoning_effort means "medium" for OpenAI, whose hidden
+        # reasoning can exhaust a small budget and return empty content.
+        # Anthropic needs nothing: Claude does not think unless asked.
+        params["reasoning_effort"] = openai_lowest_reasoning_effort(
+            selection.completion_model
+        )
     if selection.provider == "local":
         params.update(build_local_params(temperature, enable_thinking, thinking_effort))
 
