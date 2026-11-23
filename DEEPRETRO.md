@@ -69,6 +69,9 @@ Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
 | `04985f5` | `llm_helpers.py` | OpenAI `reasoning_effort` is exempt from `drop_params` via `allowed_openai_params` |
 | (uncommitted) | `prompts.py` | new `USER_PROMPT_OPENAI_NO_PREAMBLE`; `USER_PROMPT_OPENAI` itself is unchanged |
 | (uncommitted) | `llm_interface.py` | OpenAI uses `USER_PROMPT_OPENAI_NO_PREAMBLE`; the 7-ring addon goes in the user message only |
+| (uncommitted) | `llm_interface.py` | an empty refused response returns status 451; other empty responses are logged with `finish_reason` |
+| (uncommitted) | `llm.py` | `llm_pipeline` stops retrying a molecule after a 451 refusal |
+| (uncommitted) | `llm_helpers.py` | Claude Haiku 5.x counts as an Anthropic reasoning model |
 
 1. **Per-attempt trace (`062ed83`).** `llm_pipeline(..., trace=None)` appends one
    dict per attempt, with `attempt`, `temperature`, `model`, `status` and `raw`
@@ -118,6 +121,21 @@ Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
    As a result, OpenAI scores from before and after this edit are not strictly
    comparable. To go back, point the OpenAI entries at `USER_PROMPT_OPENAI` and
    restore `sys_prompt + addon`.
+8. **Refusals and Haiku 5.x (uncommitted).** Claude Haiku 5.5 runs safety
+   classifiers. A declined request is an HTTP 200 with `stop_reason: "refusal"`
+   and empty content, and Haiku 5.5 has no server-side fallback model. LiteLLM
+   reports it as an empty response whose `finish_reason` is not `"length"`, so
+   it used to fail silently as status 501 from `parse_cot_response`, and the
+   same refusal was retried up to 15 times. Now:
+   - `LLMInterface.call` returns `REFUSAL_STATUS` (451) when the content is empty
+     and `finish_reason` is `content_filter` or `refusal`. It logs the
+     `stop_details` category when LiteLLM passes it on (`refusal_category`).
+     Any other empty response is logged with its `finish_reason`.
+   - `llm_pipeline` stops at the first 451, and the trace records the refusal.
+
+   `looks_like_anthropic_reasoning_model` also matches `claude-haiku-5`, so
+   Haiku 5.5 gets `temperature=1`, which is the only temperature it accepts.
+   It also gets `reasoning_effort` and the reasoning output-token floor.
 
 ## Re-syncing
 

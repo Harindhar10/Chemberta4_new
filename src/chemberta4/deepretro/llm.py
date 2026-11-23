@@ -32,6 +32,7 @@ from chemberta4.deepretro.llm_helpers import (
     resolve_model_selection,
 )
 from chemberta4.deepretro.llm_interface import (
+    REFUSAL_STATUS,
     LLMRequest,
     build_addon_prompt as build_addon_prompt,
     create_llm_interface,
@@ -599,7 +600,8 @@ def llm_pipeline(
     trace : list of dict, optional
         When given, one dict is appended per attempt with ``attempt``,
         ``temperature``, ``model``, ``status`` (the outcome of that attempt: the
-        failing status, 204 if every pathway was filtered out, else 200) and ``raw`` (the response
+        failing status, 451 if the model refused (no further attempts are
+        made), 204 if every pathway was filtered out, else 200) and ``raw`` (the response
         text, ``None`` if the call produced none). The return value is unchanged.
 
     Returns
@@ -651,6 +653,15 @@ def llm_pipeline(
         }
         if trace is not None:
             trace.append(entry)
+        if status == REFUSAL_STATUS:
+            # A safety-classifier refusal repeats for the same prompt; retrying
+            # only re-bills it. The trace entry above already records the 451.
+            logger.warning(
+                "Model refused; skipping molecule",
+                molecule=molecule,
+                model=current_model,
+            )
+            break
         if status != 200:
             logger.warning("LLM call failed", status_code=status)
             continue

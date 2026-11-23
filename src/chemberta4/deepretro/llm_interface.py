@@ -49,6 +49,10 @@ from chemberta4.deepretro.prompts import (
 logger = structlog.get_logger(__name__)
 
 MAX_API_RETRIES = 2
+# Status for a request the model declined (Anthropic ``stop_reason: "refusal"``,
+# which LiteLLM surfaces as an empty response with a content-filter finish).
+REFUSAL_STATUS = 451
+REFUSAL_FINISH_REASONS = {"content_filter", "refusal"}
 THINK_START_TAG = "<think>"
 THINK_END_TAG = "</think>"
 # ether0 (futurehouse/ether0) wraps its reasoning and answer in its own tags.
@@ -342,10 +346,21 @@ class LLMInterface(ABC):
                     iteration=attempt,
                     node_molecule=request.molecule,
                 )
-                logger.debug(
-                    "Received LLM response", response_length=len(response_text)
-                )
                 finish_reason = getattr(response.choices[0], "finish_reason", None)
+                logger.debug(
+                    "Received LLM response",
+                    response_length=len(response_text),
+                    finish_reason=finish_reason,
+                )
+                if not response_text and finish_reason in REFUSAL_FINISH_REASONS:
+                    logger.warning(
+                        "LLM refused request",
+                        model=self.selection.completion_model,
+                        molecule=request.molecule,
+                        finish_reason=finish_reason,
+                        category=refusal_category(response),
+                    )
+                    return LLMResponse(status_code=REFUSAL_STATUS, text="")
                 if not response_text and finish_reason == "length":
                     logger.warning(
                         "Empty LLM response: output token budget exhausted",
@@ -354,6 +369,13 @@ class LLMInterface(ABC):
                             self.selection.output_token_param
                         ),
                         reasoning_tokens=reasoning_token_count(response),
+                    )
+                elif not response_text:
+                    logger.warning(
+                        "Empty LLM response",
+                        model=self.selection.completion_model,
+                        molecule=request.molecule,
+                        finish_reason=finish_reason,
                     )
                 return LLMResponse(
                     status_code=200,
@@ -628,6 +650,43 @@ def reasoning_token_count(response: Any) -> int | None:
     details = getattr(getattr(response, "usage", None), "completion_tokens_details", None)
     count = getattr(details, "reasoning_tokens", None)
     return count if isinstance(count, int) else None
+
+
+def refusal_category(response: Any) -> str | None:
+    """Return the refusal category from a completion, if the provider sent one.
+
+    Anthropic puts it in ``stop_details.category``; LiteLLM may keep that on
+    the response or in ``_hidden_params``, depending on version.
+
+    Parameters
+    ----------
+    response : Any
+        A LiteLLM completion response.
+
+    Returns
+    -------
+    str or None
+        The category (e.g. ``"bio"``), or ``None`` when it is not available.
+
+    Examples
+    --------
+    >>> from types import SimpleNamespace as NS
+    >>> refusal_category(NS(stop_details={"category": "bio"}))
+    'bio'
+    >>> refusal_category(NS(_hidden_params={"stop_details": NS(category="cyber")}))
+    'cyber'
+    >>> refusal_category(NS()) is None
+    True
+    """
+    hidden = getattr(response, "_hidden_params", None) or {}
+    details = getattr(response, "stop_details", None) or (
+        hidden.get("stop_details") if isinstance(hidden, dict) else None
+    )
+    if isinstance(details, dict):
+        category = details.get("category")
+    else:
+        category = getattr(details, "category", None)
+    return category if isinstance(category, str) else None
 
 
 def split_thinking(response_text: str) -> tuple[str, str]:
