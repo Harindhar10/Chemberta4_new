@@ -64,8 +64,9 @@ Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
 | `062ed83` | `llm.py` | `llm_pipeline` takes an optional `trace` list |
 | `2691b3a` | `llm.py` | `llm_pipeline` takes and forwards `thinking_effort` |
 | `bc06e56` | `llm_helpers.py` | gpt-6 counts as a reasoning model; reasoning models always get `temperature=1` |
-| uncommitted | `llm_helpers.py` | thinking off sends the lowest `reasoning_effort` to OpenAI reasoning models |
-| uncommitted | `llm_interface.py` | warn when a response is empty because the token budget ran out |
+| `3768fdc` | `llm_helpers.py` | thinking off sends the lowest `reasoning_effort` to OpenAI reasoning models |
+| `3768fdc` | `llm_interface.py` | warn when a response is empty because the token budget ran out |
+| uncommitted | `llm_helpers.py` | OpenAI `reasoning_effort` is exempt from `drop_params` via `allowed_openai_params` |
 
 1. **Per-attempt trace (`062ed83`).** `llm_pipeline(..., trace=None)` appends one
    dict per attempt, with `attempt`, `temperature`, `model`, `status` and `raw`
@@ -84,7 +85,7 @@ Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
    (`requires_temperature_one and enable_thinking`), and these models reject any
    other temperature either way. The retry loop's temperature sweep therefore
    has no effect on them.
-4. **Lowest reasoning effort with thinking off (uncommitted).** New helper
+4. **Lowest reasoning effort with thinking off (`3768fdc`).** New helper
    `openai_lowest_reasoning_effort` returns `"none"` for gpt-5.1+ and gpt-6,
    `"minimal"` for base gpt-5 and `"low"` for o1/o3/o4. When thinking is off,
    `build_completion_params` sends it as `reasoning_effort` to OpenAI reasoning
@@ -93,10 +94,18 @@ Files not listed here (`llm_trace.py`, `utils_molecule.py`, `vllm_metrics.py`,
    gpt-6-luna returned empty content on every attempt. That empty content is
    logged as status 502 ("no JSON found" from `OpenAILLM.parse_response`), not an
    HTTP error. Anthropic is unchanged: Claude does not think unless asked.
-   Unverified: that gpt-6-luna accepts `"none"`. If it returns 400, use `"low"`.
-5. **Empty-response warning (uncommitted).** `LLMInterface.call` logs a warning
+   Verified 2026-11-23 with curl: gpt-6-luna accepts `"none"`, with or without
+   `temperature=1`.
+5. **Empty-response warning (`3768fdc`).** `LLMInterface.call` logs a warning
    with the token limit and reasoning-token count when the content is empty and
    `finish_reason == "length"`, so this failure shows in the logs.
+6. **`reasoning_effort` survives `drop_params` (uncommitted).** `llm.py` sets
+   `litellm.drop_params = True`. A LiteLLM whose model map predates a model (the
+   remote box's system LiteLLM, for gpt-6-luna) treats `reasoning_effort` as
+   unsupported and strips it silently, so OpenAI reasoned at `"medium"` anyway
+   and edit 4 had no effect. Whenever `build_completion_params` sets
+   `reasoning_effort` for an OpenAI model, it also sets
+   `allowed_openai_params=["reasoning_effort"]`, which exempts it from the drop.
 
 ## Re-syncing
 

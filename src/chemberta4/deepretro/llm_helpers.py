@@ -765,6 +765,8 @@ def build_completion_params(
     ... )
     >>> params["temperature"], "seed" in params, params["reasoning_effort"]
     (1, False, 'none')
+    >>> params["allowed_openai_params"]
+    ['reasoning_effort']
     >>> params = build_completion_params(
     ...     "anthropic/claude-sonnet-4-6", messages, 16, 0.2, enable_thinking=False
     ... )
@@ -820,6 +822,10 @@ def build_completion_params(
         params["reasoning_effort"] = openai_lowest_reasoning_effort(
             selection.completion_model
         )
+    if "reasoning_effort" in params and selection.provider == "openai":
+        # With litellm.drop_params=True, a LiteLLM whose model map predates a
+        # model (e.g. gpt-6-luna) silently strips reasoning_effort; exempt it.
+        params["allowed_openai_params"] = ["reasoning_effort"]
     if selection.provider == "local":
         params.update(build_local_params(temperature, enable_thinking, thinking_effort))
 
