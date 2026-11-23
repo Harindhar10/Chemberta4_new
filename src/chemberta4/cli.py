@@ -639,6 +639,8 @@ def run_retrosynthesis(args: Namespace) -> None:
                 prompt=args.prompt,
                 thinking=args.thinking,
                 thinking_effort=args.thinking_effort,
+                stability_check=args.stability_check,
+                hallucination_check=args.hallucination_check,
             ),
             custom_id=lambda item: f"mol{item[0]}",
             out_path=jsonl,

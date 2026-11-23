@@ -21,3 +21,4 @@ az_models/
 # local debugging scripts
 debug/
 wandb/
+uv.lock

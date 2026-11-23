@@ -115,6 +115,8 @@ def generate_one(
         "thinking_effort": thinking_effort if thinking else None,
         "mode": mode,
         "prompt": prompt,
+        "stability_check": stability_check,
+        "hallucination_check": hallucination_check,
         "input": smiles,
         "output": row["output"],
         # The prompt as sent: ``messages`` if given, else DeepRetro's default pair.
@@ -225,10 +227,14 @@ def raw_record(
     prompt: str = "deepretro",
     thinking: bool = False,
     thinking_effort: str = "medium",
+    stability_check: bool = False,
+    hallucination_check: bool = False,
 ) -> dict[str, Any]:
     """The ``raw``-mode record for one closed-model response.
 
     Same fields as :func:`generate_one` in ``raw`` mode, plus token usage and cost.
+    ``stability_check`` and ``hallucination_check`` are recorded as configured;
+    ``raw`` mode applies neither.
     """
     usage = response.usage
     return {
@@ -238,6 +244,8 @@ def raw_record(
         "thinking_effort": thinking_effort if thinking else None,
         "mode": "raw",
         "prompt": prompt,
+        "stability_check": stability_check,
+        "hallucination_check": hallucination_check,
         "input": row["input"],
         "output": row["output"],
         "messages": messages,
