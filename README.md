@@ -330,6 +330,7 @@ the repo root), so run every command from the same place. An absolute path also 
 ```bash
 pip install -e ".[az]"
 export AZ_MODELS_PATH=az_models   # git-ignored
+mkdir -p "$AZ_MODELS_PATH/USPTO"
 python -m aizynthfinder.tools.download_public_data "$AZ_MODELS_PATH/USPTO"
 python scripts/evaluate.py --task retrosynthesis --mode autosolve --az-model USPTO ...
 ```
