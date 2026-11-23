@@ -39,7 +39,7 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 import numpy as np
 
 SEED = 42
-SAMPLE_SIZE  = 100
+SAMPLE_SIZE  = 100  # size of the shipped test sets
 random.seed(SEED)
 
 BBBP_URL = "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/BBBP.csv"
@@ -55,6 +55,19 @@ DATASETS = {
     "Tox21": Tox21_URL,
     "HIV": HIV_URL,
     "ClinTox": ClinTox_URL
+}
+
+# The 100-molecule test sets the reference repository ships in
+# data/property_prediction/ (Tox_test.csv there, renamed here). They are
+# committed under data/processed/chemllmbench/. HIV_test and ClinTox_test are
+# 80 negatives : 20 positives, which is the 4:1 majority:minority sampling the
+# paper describes for imbalanced datasets; the reference has no code for it.
+TEST_FILES = {
+    "BBBP": "BBBP_test.csv",
+    "BACE": "BACE_test.csv",
+    "Tox21": "Tox21_test.csv",
+    "HIV": "HIV_test.csv",
+    "ClinTox": "ClinTox_test.csv",
 }
 
 PROMPTS = {
@@ -195,17 +208,18 @@ def _create_prompt(sample_strategy, df_train, df_test, name, k):
 
 def load_dataset(name, sample_strategy, k):
     df = pd.read_csv(fetch_url(DATASETS[name]))
-
+    df_test = pd.read_csv(DATA_DIR / TEST_FILES[name])
 
     if name.lower() == "bace":
         df = _rename_mol_column(df)
+        df_test = _rename_mol_column(df_test)
 
-    _preprocess(df, name)
-    _filter_smiles(df)
+    for frame in (df, df_test):
+        _preprocess(frame, name)
+        _filter_smiles(frame)
 
-    df_test = df.sample(SAMPLE_SIZE, random_state=SEED)
-
-    df.drop(df_test.index, inplace=True)
+    # The shipped test molecules must not appear among the few-shot candidates.
+    df.drop(index=df.index[df["smiles"].isin(set(df_test["smiles"]))], inplace=True)
     df.reset_index(drop=True, inplace=True)   # so iloc/positions line up with train_fps
 
     system_prompts, user_prompts = _create_prompt(

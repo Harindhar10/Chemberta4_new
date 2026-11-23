@@ -76,6 +76,16 @@ Only these edits, each applied by exact string replacement:
      reference took `int(k/2)` twice, so k=5 gave 4 examples, and HIV took
      `int(0.2k) + int(0.8k)`, so k=3 gave 2. The result is unchanged for even
      k, and for HIV whenever 0.2k is a whole number.
+   - **Test sets are the reference's shipped 100-molecule files**
+     (`BBBP_test.csv`, `BACE_test.csv`, `Tox21_test.csv` (`Tox_test.csv` in the
+     reference), `HIV_test.csv`, `ClinTox_test.csv`), committed under
+     `data/processed/chemllmbench/`. Earlier runs drew 100 random rows from
+     the full DeepChem CSVs, which gave HIV only ~3-4 positives. The shipped
+     HIV and ClinTox sets are 80 negatives : 20 positives, the 4:1
+     majority:minority sampling the paper describes (the reference has no code
+     for it). BBBP is 70:30. The test molecules are removed from the few-shot
+     candidate pool. Property-prediction scores from before this change are
+     not comparable.
 
 Each module also ends with a short **adapter** that is not in the reference:
 `load(subtask, strategy, k)`, `parse(raw, subtask)` and

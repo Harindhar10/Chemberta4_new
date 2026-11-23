@@ -297,3 +297,25 @@ def test_selection_prompts_match_reference(reference, key) -> None:
     csv = SOURCE_DIR / SHIPPED[family.TASK_MAP[task.subtask]]
     system, user, df = reference("Reaction_Selection.data").load_dataset(str(csv))
     assert family.load(task.subtask) == (system, user, df["ground_truth"].astype(str).tolist())
+
+
+@pytest.mark.parametrize("name, n_pos", [("HIV", 20), ("ClinTox", 20), ("BBBP", 70)])
+def test_shipped_property_test_sets_match_the_reference(name: str, n_pos: int) -> None:
+    from chemberta4.tasks.chemllmbench import property_prediction as pp
+    from chemberta4.tasks.chemllmbench.data import DATA_DIR
+
+    df = pd.read_csv(DATA_DIR / pp.TEST_FILES[name])
+    assert len(df) == 100
+    assert int((df[pp.LABEL_COL_MAP[name]] == 1).sum()) == n_pos
+
+
+@pytest.mark.parametrize("name", ["HIV", "ClinTox"])
+def test_property_test_molecules_are_not_few_shot_candidates(name: str) -> None:
+    """Needs the DeepChem CSV (downloaded on first use)."""
+    from chemberta4.tasks.chemllmbench import property_prediction as pp
+
+    system, user, y_true = pp.load(name, "random", 4)
+    assert len(user) == len(y_true) == 100
+    smiles = [u.split("\n")[0].removeprefix("SMILES: ") for u in user]
+    assert not any(f"SMILES: {s}\n" in system[0] for s in smiles)
+    assert sum(y_true) == 20
