@@ -135,7 +135,7 @@ def hybrid_views(
 
     Examples
     --------
-    >>> base = {"mol_no": 0, "input": "P", "output": "R", "model_id": "m"}
+    >>> base = {"mol_no": 0, "input": "P", "ground_truth": "R", "model_id": "m"}
     >>> llm = {"proposals": [["B"]]}
     >>> solved = {"solved": True, "n_routes": 2, "proposals": [["A"]]}
     >>> views = hybrid_views(solved, llm, base)
@@ -269,7 +269,7 @@ def score_views(
     sources: dict[int, str] = {}
     for i in both:
         row = df.loc[i]
-        base = {"mol_no": i, "input": row["input"], "output": row["output"], "model_id": model}
+        base = {"mol_no": i, "input": row["input"], "ground_truth": row["output"], "model_id": model}
         views = hybrid_views(az_records[i], llm_records[i], base)
         sources[i] = views["hybrid"]["source"]
         for v in VIEWS:

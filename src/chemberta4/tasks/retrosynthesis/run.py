@@ -118,7 +118,7 @@ def generate_one(
         "stability_check": stability_check,
         "hallucination_check": hallucination_check,
         "input": smiles,
-        "output": row["output"],
+        "ground_truth": row["output"],
         # The prompt as sent: ``messages`` if given, else DeepRetro's default pair.
         "messages": build_messages(smiles, model, messages=messages),
     }
@@ -247,7 +247,7 @@ def raw_record(
         "stability_check": stability_check,
         "hallucination_check": hallucination_check,
         "input": row["input"],
-        "output": row["output"],
+        "ground_truth": row["output"],
         "messages": messages,
         "call_status": 200 if response.ok else response.status,
         "raw": response.text,

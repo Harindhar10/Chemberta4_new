@@ -162,7 +162,9 @@ def score_record(rec: dict[str, Any]) -> dict[str, Any]:
     parser for ``rec["model_id"]``) or ``proposals`` (already parsed, as the
     pipeline mode stores them).
     """
-    gt_canon = [canon(s) for s in str(rec["output"]).split(".")]
+    # Checkpoints written before the rename store the ground truth as ``output``.
+    truth = rec["ground_truth"] if "ground_truth" in rec else rec["output"]
+    gt_canon = [canon(s) for s in str(truth).split(".")]
     gt = [g for g in gt_canon if g is not None]
 
     if "proposals" in rec:
@@ -174,7 +176,7 @@ def score_record(rec: dict[str, Any]) -> dict[str, Any]:
     row: dict[str, Any] = {
         "mol_no": rec["mol_no"],
         "input": rec["input"],
-        "output": rec["output"],
+        "ground_truth": truth,
         "parse_status": status,
         "n_proposals": len(proposals),
         "proposals": proposals,

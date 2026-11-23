@@ -87,7 +87,7 @@ def test_canonicalize_pathways_keeps_shape_and_unparseable():
 # --------------------------------------------------------------------------
 # hybrid_views
 # --------------------------------------------------------------------------
-BASE = {"mol_no": 0, "input": "P", "output": "R", "model_id": "m"}
+BASE = {"mol_no": 0, "input": "P", "ground_truth": "R", "model_id": "m"}
 
 
 LLM = {"proposals": [["B"]]}

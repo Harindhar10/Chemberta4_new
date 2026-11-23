@@ -77,7 +77,7 @@ def test_maxfrag_can_be_right_while_exact_match_is_wrong() -> None:
 
 def test_score_record_counts_a_parse_failure_as_incorrect() -> None:
     row = score_record(
-        {"mol_no": 0, "input": "CCOC(C)=O", "output": f"{ETHANOL}.{ACETIC}",
+        {"mol_no": 0, "input": "CCOC(C)=O", "ground_truth": f"{ETHANOL}.{ACETIC}",
          "proposals": [], "status": 504}
     )
     assert row["parse_status"] == 504
@@ -87,12 +87,22 @@ def test_score_record_counts_a_parse_failure_as_incorrect() -> None:
     assert row["missed"] == [ETHANOL, ACETIC]
 
 
+def test_score_record_reads_legacy_output_field() -> None:
+    # Checkpoints written before the rename hold the ground truth as ``output``.
+    row = score_record(
+        {"mol_no": 0, "input": "CCOC(C)=O", "output": f"{ETHANOL}.{ACETIC}",
+         "proposals": [[ETHANOL, ACETIC]]}
+    )
+    assert row["ground_truth"] == f"{ETHANOL}.{ACETIC}"
+    assert row["all_correct"] == 1
+
+
 def test_score_record_reports_first_hit_rank_for_topk() -> None:
     row = score_record(
         {
             "mol_no": 1,
             "input": "CCOC(C)=O",
-            "output": f"{ETHANOL}.{ACETIC}",
+            "ground_truth": f"{ETHANOL}.{ACETIC}",
             "proposals": [["CO", "CC(=O)Cl"], ["OCC", ACETIC]],
         }
     )
