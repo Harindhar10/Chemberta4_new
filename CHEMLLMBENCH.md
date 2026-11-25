@@ -86,11 +86,22 @@ Only these edits, each applied by exact string replacement:
      for it). BBBP is 70:30. The test molecules are removed from the few-shot
      candidate pool. Property-prediction scores from before this change are
      not comparable.
+4. **Ligand selection is scored with Top-50%** (`reaction_selection.py`,
+   adapter only). The ChemLLMBench paper uses Top-1 for reactants and solvents
+   and Top-50% for ligands; the reference uses Top-1 for all three. A ligand
+   prediction is now correct if it is in the top half of the row's
+   `candidate_rank` (5 of 10). The Top-1 number is still reported, as
+   `top1_accuracy`, and is the one to compare with the reference leaderboard.
+   Ligand `accuracy` and the `reaction_selection_macro_avg` built from it no
+   longer match the leaderboard. Prompts and stored ground truths are unchanged.
 
 Each module also ends with a short **adapter** that is not in the reference:
 `load(subtask, strategy, k)`, `parse(raw, subtask)` and
 `score(y_true, y_pred, subtask)`. They call the copied functions exactly as
-the reference `run_benchmark` did. There is one deliberate shortcut: zero-shot
+the reference `run_benchmark` did, except for ligand scoring (item 4).
+`reaction_selection.py` also has `score_references(subtask, rows, y_true)`,
+which looks up the top-half ligands when a run is scored, so earlier runs can
+be scored again without regenerating. There is one deliberate shortcut: zero-shot
 reaction prediction and retrosynthesis build their prompts from the committed
 test CSV alone, without the training pickle. The prompts are identical either
 way, because `_create_prompt` never reads the training set when `k == 0`.

@@ -65,7 +65,7 @@ scaffold similarity.
 | `property_prediction` | `bbbp`, `bace`, `tox21`, `hiv`, `clintox` | accuracy (Yes/No) |
 | `reaction_prediction` | `reaction_prediction` (USPTO forward) | top-1 accuracy |
 | `retrosynthesis` | `retrosynthesis` (USPTO-50k) | top-1 accuracy |
-| `reaction_component_selection` | `reactant_selection`, `ligand_selection`, `solvent_selection` | accuracy (zero-shot only) |
+| `reaction_component_selection` | `reactant_selection`, `ligand_selection`, `solvent_selection` | top-1 accuracy for reactant and solvent, top-50% for ligand (zero-shot only) |
 | `molecule_design` | `mol_caption` (SMILES → text), `mol_design` (text → SMILES) | BLEU-4 / exact match |
 | `yield_prediction` | `Buchwald-Hartwig`, `Suzuki-Miyaura` | accuracy (high yield or not) |
 

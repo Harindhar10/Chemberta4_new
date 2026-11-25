@@ -1,6 +1,7 @@
 # Copied from Chemberata4_ChemLLMBench @ a3c6447 (branch my-changes):
 #   Reaction_Selection/data.py + Reaction_Selection/selection.py (lines 15-123)
-# Only data paths and imports changed; see CHEMLLMBENCH.md.
+# Only data paths and imports changed, except that the adapter scores ligand
+# selection with Top-50%; see CHEMLLMBENCH.md.
 from chemberta4.tasks.chemllmbench.data import DATA_DIR, fetch_url, box_pickle_path
 
 import ast
@@ -173,7 +174,8 @@ def _compute_accuracy(y_true, y_pred):
 
 # ── chemberta4 adapter (not in the reference) ───────────────────────────────
 # What run.py calls: the prompts and references exactly as the reference
-# run_benchmark built them, its parser, and its metrics.
+# run_benchmark built them, its parser, and its metrics. Ligand selection is
+# scored differently from the reference: Top-50%, as in the ChemLLMBench paper.
 SUBTASKS = TASKS
 
 
@@ -188,5 +190,49 @@ def parse(raw, subtask):
     return _parse_prediction(raw, subtask)
 
 
+def score_references(subtask, rows, y_true):
+    """What ``score`` takes as ``y_true``, given the stored ground truths and their row numbers.
+
+    For ligands this is the top half of each row's candidates by yield, best
+    first. For the other subtasks it is ``y_true`` unchanged.
+    """
+    if subtask != "Ligand_selection":
+        return y_true
+    df = pd.read_csv(str(DATA_DIR / TASK_MAP[subtask]))
+    ranked = df["candidate_rank"].apply(ast.literal_eval).tolist()
+    references = []
+    for row, truth in zip(rows, y_true):
+        candidates = ranked[int(row)]
+        if candidates[0] != truth:
+            raise ValueError(
+                f"{subtask} row {row}: stored ground truth {truth!r} is not the "
+                f"top-ranked candidate {candidates[0]!r} in {TASK_MAP[subtask]}"
+            )
+        references.append(candidates[:len(candidates) // 2])
+    return references
+
+
+def _compute_top_half_accuracy(top_halves, y_pred):
+    """Top-50% accuracy, with the Top-1 accuracy alongside it."""
+    n = len(top_halves)
+    num_correct = 0
+    for candidates, pred in zip(top_halves, y_pred):
+        pred = _normalise(pred)
+        num_correct += bool(pred) and pred in {_normalise(c) for c in candidates}
+    top1, _ = _compute_accuracy([c[0] for c in top_halves], y_pred)
+    return {
+        "accuracy": num_correct / n if n else 0.0,
+        "correct": num_correct,
+        "total": n,
+        "top1_accuracy": top1["accuracy"],
+    }
+
+
 def score(y_true, y_pred, subtask):
+    """Top-1 accuracy for reactants and solvents, Top-50% for ligands.
+
+    For ligands, ``y_true`` comes from ``score_references``.
+    """
+    if subtask == "Ligand_selection":
+        return _compute_top_half_accuracy(y_true, y_pred)
     return _compute_accuracy(y_true, y_pred)[0]

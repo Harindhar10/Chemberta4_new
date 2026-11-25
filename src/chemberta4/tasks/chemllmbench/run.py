@@ -268,8 +268,13 @@ def evaluate_run(
         family = task.family()
         preds = [_plain(family.parse(_raw_output(r), task.subtask)) for r in recs]
         y_true = [r["ground_truth"] for r in recs]
+        references: Any = y_true
+        if hasattr(family, "score_references"):
+            # Looked up here, not stored, so old checkpoints can be scored again.
+            # Outside the try: a row that does not match its data must stop the run.
+            references = family.score_references(task.subtask, [r["row"] for r in recs], y_true)
         try:
-            metrics = {m: _plain(v) for m, v in family.score(y_true, preds, task.subtask).items()}
+            metrics = {m: _plain(v) for m, v in family.score(references, preds, task.subtask).items()}
         except Exception as exc:  # e.g. the chemllmbench extra is missing for captions
             print(f"[!] could not score {key} k={k} {strategy}: {type(exc).__name__}: {exc}")
             continue

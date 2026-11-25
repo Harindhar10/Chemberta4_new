@@ -16,6 +16,7 @@ reference checkout (see CHEMLLMBENCH.md).
 
 from __future__ import annotations
 
+import ast
 import json
 
 import pandas as pd
@@ -143,6 +144,65 @@ def test_selection_parser_reads_a_labelled_answer() -> None:
     from chemberta4.tasks.chemllmbench import reaction_selection as rs
 
     assert rs.parse("Optimal solvent: CO.", "Solvent_selection") == "CO"
+
+
+def _ranked_candidates(subtask: str) -> list[list[str]]:
+    """Every row's candidates, best yield first."""
+    from chemberta4.tasks.chemllmbench import reaction_selection as rs
+
+    df = pd.read_csv(rs.DATA_DIR / rs.TASK_MAP[subtask])
+    return df["candidate_rank"].apply(ast.literal_eval).tolist()
+
+
+def test_ligand_selection_is_scored_with_top_half() -> None:
+    from chemberta4.tasks.chemllmbench import reaction_selection as rs
+
+    ranked = _ranked_candidates("Ligand_selection")[:4]
+    refs = rs.score_references("Ligand_selection", range(4), [c[0] for c in ranked])
+    assert refs == [c[:5] for c in ranked]
+
+    preds = [ranked[0][0], ranked[1][4], ranked[2][5], ""]  # best, 5th, 6th, no answer
+    metrics = rs.score(refs, preds, "Ligand_selection")
+    assert metrics == {"accuracy": 0.5, "correct": 2, "total": 4, "top1_accuracy": 0.25}
+
+
+def test_ligand_references_reject_a_misaligned_row() -> None:
+    from chemberta4.tasks.chemllmbench import reaction_selection as rs
+
+    with pytest.raises(ValueError, match="row 0"):
+        rs.score_references("Ligand_selection", [0], ["not the best ligand"])
+
+
+@pytest.mark.parametrize("subtask", ["Reactant_selection", "Solvent_selection"])
+def test_reactant_and_solvent_selection_stay_top1(subtask) -> None:
+    from chemberta4.tasks.chemllmbench import reaction_selection as rs
+
+    ranked = _ranked_candidates(subtask)[:2]
+    truths = [c[0] for c in ranked]
+    assert rs.score_references(subtask, [0, 1], truths) == truths
+    metrics = rs.score(truths, [ranked[0][0], ranked[1][1]], subtask)
+    assert metrics == {"accuracy": 0.5, "correct": 1, "total": 2}
+
+
+def test_evaluate_run_matches_ligand_references_to_rows(tmp_path) -> None:
+    ranked = _ranked_candidates("Ligand_selection")
+    requests = {r.row: r for r in run.build_requests(["ligand_selection"], [0])}
+    # Completion order, with gaps; the rank answered is 5th, 6th, best.
+    answers = {7: ranked[7][4], 2: ranked[2][5], 5: ranked[5][0]}
+    backend = EchoBackend({requests[row].user: ligand for row, ligand in answers.items()})
+    records = [run.generate_one(backend, requests[row], run_id="t") for row in answers]
+    (tmp_path / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+
+    metrics, summary = run.evaluate_run(tmp_path)
+    scores = summary["ligand_selection"]["k0_none"]
+    assert scores["primary_metric"] == "accuracy"
+    assert scores["correct"] == 2 and scores["total"] == 3
+    assert scores["top1_accuracy"] == pytest.approx(1 / 3)
+    assert len(metrics[metrics["primary"]]) == 1
+
+    # The predictions file still shows the single best ligand.
+    preds = pd.read_csv(tmp_path / "predictions" / "ligand_selection_k0_none.csv")
+    assert preds["ground_truth"].tolist() == [ranked[row][0] for row in (2, 5, 7)]
 
 
 # --------------------------------------------------------------------------
