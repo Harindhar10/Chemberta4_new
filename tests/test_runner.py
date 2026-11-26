@@ -188,3 +188,18 @@ def test_generate_without_groups_is_unchanged(tmp_path) -> None:
         on_group_done=lambda g: (_ for _ in ()).throw(AssertionError("called")),
     )
     assert counts["ok"] == 2
+
+
+def test_generate_prints_why_items_were_dropped(tmp_path, capsys) -> None:
+    path = tmp_path / "out.jsonl"
+    counts = generate(
+        items=[1, 2],
+        worker=lambda n: {"id": n, "status": "api_error", "error": "ConnectionError: refused"},
+        out_path=path,
+        keep=lambda rec: rec["status"] != "api_error",
+        workers=2,
+        progress_every=0,
+    )
+    assert counts["dropped"] == 2
+    assert load_jsonl(path) == []
+    assert "2x ConnectionError: refused" in capsys.readouterr().out

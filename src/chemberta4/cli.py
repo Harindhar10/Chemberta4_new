@@ -347,9 +347,11 @@ def run_moleculenet(args: Namespace) -> None:
 
     # Records written before --seeds existed have no seed and count as seed 0.
     metrics = evaluate_run(run_dir, args.split, default_seed=0)
-    if not metrics.empty:
-        metrics.to_csv(run_dir / "metrics.csv", index=False)
-        print(f"\nwrote {run_dir / 'metrics.csv'}")
+    if metrics.empty:
+        print("nothing scored; skipping W&B/HF upload")
+        return
+    metrics.to_csv(run_dir / "metrics.csv", index=False)
+    print(f"\nwrote {run_dir / 'metrics.csv'}")
 
     config = run_config(
         args,
@@ -460,9 +462,11 @@ def run_chemllmbench(args: Namespace) -> None:
     metrics, _ = task.evaluate_run(run_dir, keys={task.resume_key(r) for r in requests})
     print()
     print(task.report(metrics))
-    if not metrics.empty:
-        metrics.to_csv(run_dir / "metrics.csv", index=False)
-        print(f"\nwrote {run_dir / 'metrics.csv'}, summary.json and predictions/")
+    if metrics.empty:
+        print("nothing scored; skipping W&B/HF upload")
+        return
+    metrics.to_csv(run_dir / "metrics.csv", index=False)
+    print(f"\nwrote {run_dir / 'metrics.csv'}, summary.json and predictions/")
 
     config = run_config(
         args,

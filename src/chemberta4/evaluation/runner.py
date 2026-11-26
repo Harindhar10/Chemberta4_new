@@ -93,6 +93,7 @@ def generate(
         ``keep`` rejected.
     """
     counts: Counter = Counter()
+    errors: Counter = Counter()  # why records were dropped, shown at the end
     if not items:
         return counts
 
@@ -107,6 +108,7 @@ def generate(
             record = future.result()
             if not keep(record):
                 counts["dropped"] += 1
+                errors[str(record.get("error") or "no error message")[:300]] += 1
             else:
                 counts[status_of(record)] += 1
                 fout.write(json.dumps(record) + "\n")
@@ -129,6 +131,8 @@ def generate(
         n = counts["dropped"]
         print(f"{tag}{n} item{'s' if n > 1 else ''} failed at the API and "
               f"{'were' if n > 1 else 'was'} not saved; re-run to retry")
+        for error, c in errors.most_common(3):
+            print(f"{tag}  {c}x {error}")
     return counts
 
 

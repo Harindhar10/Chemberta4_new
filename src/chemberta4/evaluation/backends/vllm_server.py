@@ -111,8 +111,12 @@ class VLLMServerBackend(ModelBackend):
         A reasoning trace is taken from the server's own field when present,
         otherwise split off the text.
         """
+        import litellm
         from litellm import completion
 
+        # Drop litellm's "Give Feedback / Get Help" banner on every failure;
+        # the real error is kept in the record and summarised by the runner.
+        litellm.suppress_debug_info = True
         params = self.completion_params(messages, **overrides)
         last_error = ""
         for attempt in range(1, self.max_retries + 1):
